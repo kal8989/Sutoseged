@@ -1,0 +1,40 @@
+name: Sütősegéd
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Zip kicsomagolása, ha van
+        run: |
+          if [ -f sutoseged.zip ]; then
+            unzip -o sutoseged.zip -d tmp
+            rsync -a tmp/sutoseged/ ./ --exclude '.github/'
+            rm -rf tmp sutoseged.zip
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add -A
+            git commit -m "Forras kicsomagolva a zipbol" || true
+            git push || true
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sutoseged-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
