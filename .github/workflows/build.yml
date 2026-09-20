@@ -10,18 +10,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Mi van a repóban?
+        run: ls -la
+
       - name: Zip kicsomagolása, ha van
         run: |
-          if [ -f sutoseged.zip ]; then
-            unzip -o sutoseged.zip -d tmp
-            rsync -a tmp/sutoseged/ ./ --exclude '.github/'
-            rm -rf tmp sutoseged.zip
+          ZIP=$(ls -1 *.zip 2>/dev/null | head -1)
+          if [ -n "$ZIP" ]; then
+            echo "Talalt zip: $ZIP"
+            unzip -o "$ZIP" -d tmp
+            SETTINGS=$(find tmp -name 'settings.gradle.kts' | head -1)
+            if [ -z "$SETTINGS" ]; then
+              echo "A zipben nincs settings.gradle.kts!"
+              find tmp -maxdepth 3
+              exit 1
+            fi
+            ROOT=$(dirname "$SETTINGS")
+            echo "Projekt gyokere a zipben: $ROOT"
+            cp -r "$ROOT"/. ./
+            rm -rf tmp "$ZIP"
             git config user.name "github-actions"
             git config user.email "actions@github.com"
             git add -A
-            git commit -m "Forras kicsomagolva a zipbol" || true
+            git commit -m "Forras kicsomagolva" || true
             git push || true
+          else
+            echo "Nincs zip a gyokerben."
           fi
+
+      - name: Ellenőrzés
+        run: |
+          ls -la
+          test -f settings.gradle.kts || { echo "HIANYZIK a settings.gradle.kts - toltsd fel a zipet a repo gyokerebe."; exit 1; }
 
       - uses: actions/setup-java@v4
         with:
@@ -32,7 +52,7 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - run: gradle assembleDebug --no-daemon --stacktrace
+      - run: gradle assembleDebug --no-daemon
 
       - uses: actions/upload-artifact@v4
         with:
