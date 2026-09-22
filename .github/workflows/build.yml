@@ -1,47 +1,49 @@
 name: Sütősegéd
+
 on:
   push:
   workflow_dispatch:
+
 permissions:
   contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Mi van a repóban?
-        run: ls -la
-
       - name: Zip kicsomagolása, ha van
         run: |
-          ZIP=$(ls -1 *.zip 2>/dev/null | head -1)
-          if [ -n "$ZIP" ]; then
-            echo "Talalt zip: $ZIP"
-            unzip -o "$ZIP" -d tmp
-            SETTINGS=$(find tmp -name 'settings.gradle.kts' | head -1)
-            if [ -z "$SETTINGS" ]; then
-              echo "A zipben nincs settings.gradle.kts!"
-              find tmp -maxdepth 3
-              exit 1
-            fi
-            ROOT=$(dirname "$SETTINGS")
-            echo "Projekt gyokere a zipben: $ROOT"
-            cp -r "$ROOT"/. ./
-            rm -rf tmp "$ZIP"
-            git config user.name "github-actions"
-            git config user.email "actions@github.com"
-            git add -A
-            git commit -m "Forras kicsomagolva" || true
-            git push || true
+          # A legmagasabb verziószámú sutoseged-vN.zip nyer; ha nincs, bármelyik zip.
+          ZIP=$(ls -1 sutoseged-v*.zip 2>/dev/null | sort -V | tail -1)
+          [ -z "$ZIP" ] && ZIP=$(ls -1 *.zip 2>/dev/null | head -1)
+          if [ -z "$ZIP" ]; then
+            echo "Nincs zip, a repóban lévő forrásból fordulunk."
+            exit 0
+          fi
+          echo "Kicsomagolás: $ZIP"
+          unzip -q -o "$ZIP" -d tmp
+          SETTINGS=$(find tmp -name 'settings.gradle.kts' | head -1)
+          [ -z "$SETTINGS" ] && { echo "A zipben nincs settings.gradle.kts"; exit 1; }
+          ROOT=$(dirname "$SETTINGS")
+          # A .github mappát NEM írjuk felül: a GitHub nem engedi, hogy egy futás
+          # a saját workflow-fájlját módosítsa, és akkor semmi nem kerülne be.
+          rsync -a --exclude '.github/' "$ROOT"/ ./
+          rm -rf tmp
+          rm -f *.zip
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nincs változás."
           else
-            echo "Nincs zip a gyokerben."
+            git commit -m "Forrás frissítve: $ZIP"
+            git push
           fi
 
       - name: Ellenőrzés
-        run: |
-          ls -la
-          test -f settings.gradle.kts || { echo "HIANYZIK a settings.gradle.kts - toltsd fel a zipet a repo gyokerebe."; exit 1; }
+        run: test -f settings.gradle.kts || { echo "HIANYZIK a settings.gradle.kts"; exit 1; }
 
       - uses: actions/setup-java@v4
         with:
@@ -52,9 +54,24 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - run: gradle assembleDebug --no-daemon
+      - name: Fordítás
+        run: |
+          gradle assembleDebug --no-daemon \
+            -PappVersionName=1.0.${{ github.run_number }} \
+            -PappVersionCode=${{ github.run_number }}
+
+      - name: APK elnevezése
+        run: cp app/build/outputs/apk/debug/app-debug.apk sutoseged-1.0.${{ github.run_number }}.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sutoseged-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: sutoseged-1.0.${{ github.run_number }}
+          path: sutoseged-1.0.${{ github.run_number }}.apk
+
+      - name: Kiadás közzététele
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Sütősegéd 1.0.${{ github.run_number }}
+          files: sutoseged-1.0.${{ github.run_number }}.apk
+          
