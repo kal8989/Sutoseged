@@ -35,9 +35,19 @@ data class Phase(
     }
 }
 
+data class Ingredient(val nev: String, val mennyiseg: String) {
+    fun toJson(): JSONObject = JSONObject().put("nev", nev).put("mennyiseg", mennyiseg)
+
+    companion object {
+        fun from(o: JSONObject) = Ingredient(o.optString("nev"), o.optString("mennyiseg"))
+    }
+}
+
 data class Plan(
     val cim: String,
     val osszefoglalo: String,
+    val hozzavalok: List<Ingredient>,
+    val receptJavitasok: List<String>,
     val elokeszites: List<String>,
     val fazisok: List<Phase>,
     val maghomerseklet: String,
@@ -48,6 +58,8 @@ data class Plan(
     fun toJson(): JSONObject = JSONObject().apply {
         put("cim", cim)
         put("osszefoglalo", osszefoglalo)
+        put("hozzavalok", JSONArray(hozzavalok.map { it.toJson() }))
+        put("receptJavitasok", JSONArray(receptJavitasok))
         put("elokeszites", JSONArray(elokeszites))
         put("fazisok", JSONArray(fazisok.map { it.toJson() }))
         put("maghomerseklet", maghomerseklet)
@@ -62,6 +74,16 @@ data class Plan(
             o.optJSONArray("elokeszites")?.let { arr ->
                 for (i in 0 until arr.length()) prep.add(arr.optString(i))
             }
+            val ingredients = mutableListOf<Ingredient>()
+            o.optJSONArray("hozzavalok")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    arr.optJSONObject(i)?.let { ingredients.add(Ingredient.from(it)) }
+                }
+            }
+            val fixes = mutableListOf<String>()
+            o.optJSONArray("receptJavitasok")?.let { arr ->
+                for (i in 0 until arr.length()) fixes.add(arr.optString(i))
+            }
             val phases = mutableListOf<Phase>()
             o.optJSONArray("fazisok")?.let { arr ->
                 for (i in 0 until arr.length()) {
@@ -71,6 +93,8 @@ data class Plan(
             return Plan(
                 cim = o.optString("cim", "Sütési terv"),
                 osszefoglalo = o.optString("osszefoglalo"),
+                hozzavalok = ingredients,
+                receptJavitasok = fixes,
                 elokeszites = prep,
                 fazisok = phases,
                 maghomerseklet = o.optString("maghomerseklet"),
@@ -144,7 +168,7 @@ data class PlanRequest(
         if (osszsulyG.isNotBlank()) appendLine("Összsúly: $osszsulyG g")
         if (vastagsagCm.isNotBlank()) appendLine("A legvastagabb rész: $vastagsagCm cm")
         appendLine("Kívánt eredmény / stratégia: $strategia")
-        if (megjegyzes.isNotBlank()) appendLine("További megjegyzés: $megjegyzes")
+        if (megjegyzes.isNotBlank()) appendLine("A felhasználó receptje / hozzávalói / megjegyzése: $megjegyzes")
         appendLine()
         appendLine("Készíts ehhez fázistervet a fenti szabályok szerint, JSON-ban.")
     }

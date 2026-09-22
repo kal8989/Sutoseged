@@ -31,15 +31,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.reflect.KProperty
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,37 +51,52 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** Alkalmazás-szintű scope: a tervezés akkor is fut tovább, ha kilépsz az appból. */
-object AppScope : CoroutineScope by CoroutineScope(SupervisorJob() + Dispatchers.Main)
+/** Egy szöveges mező, ami minden változáskor azonnal a telefon tárhelyére íródik. */
+class Persisted(private val store: Store, private val key: String, default: String) {
+    private val state = mutableStateOf(store.getForm(key, default))
+    operator fun getValue(thisRef: Any?, property: KProperty<*>): String = state.value
+    operator fun setValue(thisRef: Any?, property: KProperty<*>, value: String) {
+        state.value = value
+        store.putForm(key, value)
+    }
+}
 
 /**
- * A tervezőlap állapota. Azért az képernyőn kívül, egyetlen példányban, hogy sem a
- * fülváltás, sem az app háttérbe kerülése ne törölje az adatokat és ne állítsa meg
- * a folyamatban lévő tervezést.
+ * A tervezőlap állapota. Az űrlap minden mezője, a legutóbbi terv és a tervezés
+ * állapota a tárhelyen él, így az app kilövése után is minden visszajön.
  */
-object Planner {
-    var foodPreset by mutableStateOf(FoodPresets.all.first())
-    var foodCustom by mutableStateOf("")
-    var darab by mutableStateOf("")
-    var suly by mutableStateOf("")
-    var vastagsag by mutableStateOf("")
-    var strategia by mutableStateOf(Strategies.all[1])
-    var megjegyzes by mutableStateOf("")
-    var loading by mutableStateOf(false)
-    var error by mutableStateOf<String?>(null)
-    var plan by mutableStateOf<Plan?>(null)
+class PlannerState(private val store: Store) {
+    var foodPreset by Persisted(store, "food", FoodPresets.all.first())
+    var foodCustom by Persisted(store, "custom", "")
+    var darab by Persisted(store, "darab", "")
+    var suly by Persisted(store, "suly", "")
+    var vastagsag by Persisted(store, "vastagsag", "")
+    var strategia by Persisted(store, "strategia", Strategies.all[1])
+    var megjegyzes by Persisted(store, "megjegyzes", "")
+
+    var loading by mutableStateOf(store.planStatus == "running")
+    var error by mutableStateOf(store.planError.ifBlank { null })
+    var plan by mutableStateOf(store.loadLastPlan())
     var savedNote by mutableStateOf<String?>(null)
 
     fun etel(): String = if (foodPreset.startsWith("Egyéb")) foodCustom else foodPreset
 
     fun request() = PlanRequest(etel(), darab, suly, vastagsag, strategia, megjegyzes)
+
+    /** Átveszi, amit a háttérfeladat a tárhelyre írt. */
+    fun refreshFromStore() {
+        val status = store.planStatus
+        loading = status == "running"
+        error = store.planError.ifBlank { null }
+        if (status == "done") plan = store.loadLastPlan()
+    }
 }
 
 @Composable
 fun App() {
     val context = LocalContext.current
     val store = remember { Store(context) }
-    val planner = Planner
+    val planner = remember { PlannerState(store) }
     var tab by remember { mutableIntStateOf(0) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -91,6 +104,7 @@ fun App() {
     ) { }
 
     LaunchedEffect(Unit) {
+        TimerStore.load(context)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -128,7 +142,7 @@ fun App() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PlannerScreen(store: Store, st: Planner) {
+fun PlannerScreen(store: Store, st: PlannerState) {
     val context = LocalContext.current
     var foodMenu by remember { mutableStateOf(false) }
     var stratMenu by remember { mutableStateOf(false) }
@@ -227,8 +241,9 @@ fun PlannerScreen(store: Store, st: Planner) {
         OutlinedTextField(
             value = st.megjegyzes,
             onValueChange = { st.megjegyzes = it },
-            label = { Text("Megjegyzés (pác, köret, korábbi tapasztalat…)") },
-            minLines = 2,
+            label = { Text("Recept, hozzávalók, megjegyzés") },
+            placeholder = { Text("pl. 250 g zabpehely, 700 g meggybefőtt, dió…") },
+            minLines = 3,
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -240,24 +255,9 @@ fun PlannerScreen(store: Store, st: Planner) {
                     st.error = "Add meg, mit sütsz."
                     return@Button
                 }
-                st.loading = true
-                val cfg = store.aiConfig()
                 val prompt = st.request().toUserPrompt()
-                val appCtx = context.applicationContext
-                AppScope.launch {
-                    val result = AiClient.plan(cfg, prompt)
-                    st.loading = false
-                    result.fold(
-                        onSuccess = {
-                            st.plan = it
-                            Notifications.show(
-                                appCtx, Notifications.CH_PLAN,
-                                "Elkészült a sütési terv", it.cim, 1001
-                            )
-                        },
-                        onFailure = { st.error = it.message ?: "Ismeretlen hiba" }
-                    )
-                }
+                PlanWorker.enqueue(context.applicationContext, prompt)
+                st.refreshFromStore()
             },
             enabled = !st.loading,
             modifier = Modifier.fillMaxWidth()
@@ -273,6 +273,21 @@ fun PlannerScreen(store: Store, st: Planner) {
             } else {
                 Text("Terv készítése")
             }
+        }
+
+        LaunchedEffect(st.loading) {
+            while (st.loading) {
+                delay(1000)
+                st.refreshFromStore()
+            }
+        }
+
+        if (st.loading) {
+            Text(
+                "A tervezés a háttérben fut – nyugodtan válts másik appra, értesítést kapsz.",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         st.error?.let {
@@ -316,6 +331,30 @@ fun PlanView(plan: Plan) {
                     containerColor = MaterialTheme.colorScheme.tertiaryContainer
                 )
             ) { Text("⚠️ ${plan.figyelmeztetes}", Modifier.padding(12.dp), fontSize = 14.sp) }
+        }
+
+        if (plan.hozzavalok.isNotEmpty()) {
+            Card {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Hozzávalók", fontWeight = FontWeight.SemiBold)
+                    plan.hozzavalok.forEach { ing ->
+                        Row(Modifier.fillMaxWidth()) {
+                            Text(ing.nev, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                            Text(
+                                ing.mennyiseg,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(start = 12.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (plan.receptJavitasok.isNotEmpty()) {
+            Text("Amit módosítottam a leírásodon", fontWeight = FontWeight.SemiBold)
+            plan.receptJavitasok.forEach { Text("• $it", fontSize = 14.sp) }
         }
 
         if (plan.elokeszites.isNotEmpty()) {
@@ -365,7 +404,7 @@ fun PhaseCard(timerKey: String, index: Int, phase: Phase) {
         while (endAt != null) {
             now = System.currentTimeMillis()
             if (now >= endAt) {
-                TimerStore.endAt.remove(timerKey)
+                TimerStore.stop(appCtx, timerKey)
                 break
             }
             delay(500)
@@ -404,18 +443,18 @@ fun PhaseCard(timerKey: String, index: Int, phase: Phase) {
                 if (phase.idoPerc > 0) {
                     Button(onClick = {
                         if (running) {
-                            TimerStore.endAt.remove(timerKey)
+                            TimerStore.stop(appCtx, timerKey)
                             Alarms.cancel(appCtx, timerKey, phase.nev, reszlet)
                         } else {
                             val end = System.currentTimeMillis() + phase.idoPerc * 60_000L
-                            TimerStore.endAt[timerKey] = end
+                            TimerStore.start(appCtx, timerKey, end)
                             now = System.currentTimeMillis()
                             Alarms.schedule(appCtx, timerKey, phase.nev, reszlet, end)
                         }
                     }) { Text(if (running) "Állj" else "Indít") }
 
                     OutlinedButton(onClick = {
-                        TimerStore.endAt.remove(timerKey)
+                        TimerStore.stop(appCtx, timerKey)
                         Alarms.cancel(appCtx, timerKey, phase.nev, reszlet)
                     }) { Text("Nulláz") }
                 }

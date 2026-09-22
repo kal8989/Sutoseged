@@ -140,9 +140,32 @@ object Alarms {
 }
 
 /**
- * A futó időzítők végideje. Azért itt, a képernyőn kívül, hogy fülváltás vagy
- * az app háttérbe kerülése ne állítsa meg a visszaszámlálást.
+ * A futó időzítők végideje. A memóriában lévő térkép a felületnek kell, a tárhelyre
+ * írt másolat pedig ahhoz, hogy az app kilövése után is lássuk, melyik fut még.
  */
 object TimerStore {
     val endAt = mutableStateMapOf<String, Long>()
+    private var loaded = false
+
+    fun load(context: Context) {
+        if (loaded) return
+        loaded = true
+        val now = System.currentTimeMillis()
+        Store(context).loadTimers().forEach { (k, v) -> if (v > now) endAt[k] = v }
+        persist(context)
+    }
+
+    fun start(context: Context, key: String, end: Long) {
+        endAt[key] = end
+        persist(context)
+    }
+
+    fun stop(context: Context, key: String) {
+        endAt.remove(key)
+        persist(context)
+    }
+
+    private fun persist(context: Context) {
+        Store(context).saveTimers(endAt.toMap())
+    }
 }

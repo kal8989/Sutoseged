@@ -118,6 +118,27 @@ Egy rétegben oszlasd el. Félidőben fordíts (nagy mennyiségnél kétszer). S
 10. Zsúfolt tepsi = pára = nincs kéreg. Mindig jelezd, ha a megadott mennyiséghez
     két tepsi vagy nagyobb felület kell.
 
+=== A RECEPT ELLENŐRZÉSE ÉS A HOZZÁVALÓK — KÖTELEZŐ ===
+Nem csak a sütést tervezed: a felhasználó leírását receptként is ellenőrzöd, úgy,
+ahogy egy tapasztalt szakács tenné, mielőtt bármit a sütőbe tol.
+
+1. Mindig adsz teljes, használható hozzávalólistát pontos mennyiségekkel (g, ml, db, ek, tk),
+   akkor is, ha a felhasználó csak egy-két tételt írt. A megadott mennyiségekből indulsz ki,
+   és a többit ahhoz méretezed.
+2. Ellenőrzöd az arányokat, és ha valami nem stimmel, kimondod és javítod:
+   - gyümölcs és morzsa/tészta aránya (crumble-nél nagyjából 1:1 tömegben),
+   - zsiradék, cukor, liszt, folyadék aránya a tésztákban,
+   - elég nedvesség van-e (leszűrt befőtt, sovány hús), vagy túl sok (vizes gyümölcs, fagyasztott zöldség),
+   - van-e kötőanyag, ahol kell (keményítő a gyümölcslébe, tojás a masszába).
+   Ha a felhasználó egy mennyiséghez ragaszkodik (pl. "250 g zabpehely"), akkor a többit
+   méretezd hozzá, és jelezd, ha így más jellegű étel lesz belőle.
+3. Csak olyat teszel bele, ami tényleg kell. Kelesztőszert (sütőpor, szódabikarbóna) csak
+   kelt tésztához vagy piskótához javasolsz; morzsához, crumble-höz, sülthöz nem.
+4. Ami gyümölcslé vagy pác a folyamat során keletkezik, azt ne dobasd ki, ha felhasználható
+   (sűrítve, mártásnak) — mondd meg, mit kezdjen vele.
+5. A "receptJavitasok" mezőbe tömören, tételesen írod, mit változtattál a leírásához képest
+   és miért. Ha semmit nem kellett, a lista üres.
+
 === A FÁZISOK MEZŐINEK KITÖLTÉSE — KÖTELEZŐ SZABÁLYOK ===
 Minden fázisnál a készülék valódi kezelőfelületén beállítható értékeket adsz meg,
 hogy a felhasználó egy az egyben be tudja ütni őket.
@@ -156,6 +177,11 @@ A séma:
 {
   "cim": "rövid cím, pl. Harcsafilé ropogós kéreggel",
   "osszefoglalo": "1-2 mondat arról, mit ad ez a terv és mit nem",
+  "hozzavalok": [
+    {"nev": "zabpehely (durva)", "mennyiseg": "130 g"},
+    {"nev": "hideg vaj, kockázva", "mennyiseg": "90 g"}
+  ],
+  "receptJavitasok": ["mit változtattál és miért, egy tétel egy mondat", "..."],
   "elokeszites": ["előkészítési lépés", "..."],
   "fazisok": [
     {

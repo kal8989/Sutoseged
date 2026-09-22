@@ -37,6 +37,55 @@ class Store(context: Context) {
         Provider.CLAUDE -> AiConfig(Provider.CLAUDE, claudeKey, claudeModel)
     }
 
+    // ------------------------------------------------------------ űrlap és utolsó terv
+    // Minden a telefon tárhelyére kerül, hogy az app kilövése után is megmaradjon.
+
+    fun getForm(key: String, default: String): String =
+        prefs.getString("form_$key", default) ?: default
+
+    fun putForm(key: String, value: String) {
+        prefs.edit().putString("form_$key", value).apply()
+    }
+
+    /** idle / running / done / error */
+    var planStatus: String
+        get() = prefs.getString("planStatus", "idle") ?: "idle"
+        set(v) = prefs.edit().putString("planStatus", v).commit().let { }
+
+    var planError: String
+        get() = prefs.getString("planError", "") ?: ""
+        set(v) = prefs.edit().putString("planError", v).commit().let { }
+
+    private val lastPlanFile = File(context.filesDir, "last_plan.json")
+
+    fun saveLastPlan(plan: Plan?) {
+        if (plan == null) lastPlanFile.delete()
+        else lastPlanFile.writeText(plan.toJson().toString())
+    }
+
+    fun loadLastPlan(): Plan? = try {
+        if (lastPlanFile.exists()) Plan.from(org.json.JSONObject(lastPlanFile.readText())) else null
+    } catch (e: Exception) {
+        null
+    }
+
+    // ------------------------------------------------------------ futó időzítők
+
+    fun loadTimers(): Map<String, Long> = try {
+        val o = org.json.JSONObject(prefs.getString("timers", "{}") ?: "{}")
+        val out = mutableMapOf<String, Long>()
+        o.keys().forEach { k -> out[k] = o.optLong(k) }
+        out
+    } catch (e: Exception) {
+        emptyMap()
+    }
+
+    fun saveTimers(timers: Map<String, Long>) {
+        val o = org.json.JSONObject()
+        timers.forEach { (k, v) -> o.put(k, v) }
+        prefs.edit().putString("timers", o.toString()).apply()
+    }
+
     // ------------------------------------------------------------ tervek
 
     fun loadPlans(): List<SavedPlan> {
