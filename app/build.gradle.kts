@@ -19,9 +19,24 @@ android {
         versionName = appVersionName
     }
 
+    // Állandó aláíró kulcs: enélkül minden GitHub-futás új, véletlen kulccsal írna alá,
+    // és az Android nem engedné a frissítést a régi verzióra telepíteni (adatvesztés).
+    signingConfigs {
+        create("fixed") {
+            storeFile = file("sutoseged.keystore")
+            storePassword = "sutoseged"
+            keyAlias = "sutoseged"
+            keyPassword = "sutoseged"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("fixed")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("fixed")
         }
     }
 
