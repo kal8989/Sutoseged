@@ -34,12 +34,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.rotate
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -47,6 +43,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
@@ -65,11 +62,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.PI
-import kotlin.math.cos
 import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlin.random.Random
 import kotlin.reflect.KProperty
 
 class MainActivity : ComponentActivity() {
@@ -922,246 +915,63 @@ private fun HeroText(
     )
 }
 
-/** Egy darab sült zöldség vagy hús a tepsin (tepsibeli helye és fajtája). */
-private class FoodBit(val u: Float, val v: Float, val kind: Float, val tilt: Float)
-
-private val foodBits: List<FoodBit> = run {
-    val r = Random(7)
-    List(46) { FoodBit(0.06f + r.nextFloat() * 0.88f, 0.12f + r.nextFloat() * 0.76f, r.nextFloat(), r.nextFloat()) }
-        .sortedBy { it.v }
-}
-
 /**
- * A sütőtér rajza a vezérlőlap fejlécéhez: hátsó fal a ventilátorburkolattal,
- * oldalt a betolósínek, fent a fűtőszál, a 4. szinten tepsi sült zöldséggel.
- * A belső fény a hőfokkal erősödik ([heat] 0..1), a lámpa külön kapcsol.
+ * A sütőtér fényképe a vezérlőlap fejlécéhez, rajta a sütő állapota szerinti fény:
+ * kikapcsolt, sötét sütőnél elsötétül, felkapcsolt lámpánál kivilágosodik, a hőfokkal
+ * pedig meleg narancs fényt kap ([heat] 0..1). Alul a lap hátterébe olvad.
  */
 @Composable
 private fun OvenBackdrop(heat: Float, lampOn: Boolean, fade: Color, modifier: Modifier = Modifier) {
     val glow by animateFloatAsState(heat.coerceIn(0f, 1f), animationSpec = tween(1500), label = "glow")
     val lamp by animateFloatAsState(if (lampOn) 1f else 0f, animationSpec = tween(600), label = "lamp")
-    Canvas(modifier) { drawOvenCavity(glow, lamp, fade) }
+    Box(modifier) {
+        Image(
+            painter = painterResource(R.drawable.oven_bg),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.matchParentSize()
+        )
+        Canvas(Modifier.matchParentSize()) { drawOvenLight(glow, lamp, fade) }
+    }
 }
 
-private fun hot(cold: Long, warm: Long, t: Float): Color = lerp(Color(cold), Color(warm), t)
-
-// Négy sarokpont külön paraméterként: az Offset értékosztály, vararg-ként nem adható át.
-private fun polygon(a: Offset, b: Offset, c: Offset, d: Offset): Path = Path().apply {
-    moveTo(a.x, a.y)
-    lineTo(b.x, b.y)
-    lineTo(c.x, c.y)
-    lineTo(d.x, d.y)
-    close()
-}
-
-private fun DrawScope.drawOvenCavity(glow: Float, lamp: Float, fade: Color) {
+private fun DrawScope.drawOvenLight(glow: Float, lamp: Float, fade: Color) {
     val w = size.width
     val h = size.height
-    drawRect(hot(0xFF141110, 0xFF2A1409, glow))
-
-    // a sütőtér hátsó fala és a négy oldal, perspektívában
-    val bl = w * 0.2f
-    val br = w * 0.8f
-    val bt = h * 0.14f
-    val bb = h * 0.68f
-    val wall = hot(0xFF1E1C1E, 0xFF3D1D0B, glow)
-    val wallDark = hot(0xFF121113, 0xFF24100A, glow)
-    val back = hot(0xFF262428, 0xFF512811, glow)
-
-    drawPath(
-        polygon(Offset(0f, 0f), Offset(w, 0f), Offset(br, bt), Offset(bl, bt)),
-        Brush.verticalGradient(listOf(wallDark, wall), 0f, bt)
-    )
-    drawPath(
-        polygon(Offset(0f, h), Offset(bl, bb), Offset(br, bb), Offset(w, h)),
-        Brush.verticalGradient(listOf(wall, wallDark), bb, h)
-    )
-    drawPath(
-        polygon(Offset(0f, 0f), Offset(bl, bt), Offset(bl, bb), Offset(0f, h)),
-        Brush.horizontalGradient(listOf(wallDark, wall), 0f, bl)
-    )
-    drawPath(
-        polygon(Offset(w, 0f), Offset(br, bt), Offset(br, bb), Offset(w, h)),
-        Brush.horizontalGradient(listOf(wall, wallDark), br, w)
-    )
-    drawRect(
-        Brush.radialGradient(listOf(back, wall), Offset(w / 2, (bt + bb) / 2), (br - bl) * 0.6f),
-        topLeft = Offset(bl, bt),
-        size = Size(br - bl, bb - bt)
-    )
-
-    // a forró levegő ventilátorának burkolata a hátsó falon
-    val c = Offset(w / 2, (bt + bb) / 2)
-    val r = (bb - bt) * 0.40f
-    val metal = hot(0xFF48444A, 0xFF8A4C26, glow)
-    drawCircle(hot(0xFF1A191B, 0xFF30170B, glow), r, c)
-    for (i in 1..6) {
-        drawCircle(metal.copy(alpha = 0.9f), r * i / 6f, c, style = Stroke(width = w * 0.004f))
-    }
-    for (k in 0 until 28) {
-        val a = k / 28f * 2f * PI.toFloat()
-        drawLine(
-            metal.copy(alpha = 0.35f),
-            Offset(c.x + cos(a) * r * 0.3f, c.y + sin(a) * r * 0.3f),
-            Offset(c.x + cos(a) * r * 0.97f, c.y + sin(a) * r * 0.97f),
-            strokeWidth = w * 0.006f
-        )
-    }
-    drawCircle(metal, r * 0.12f, c)
-
-    // betolósínek, öt szint mindkét oldalon
-    val levels = listOf(0.2f, 0.36f, 0.52f, 0.68f, 0.84f)
-    val rail = hot(0xFF5A5652, 0xFFC07A45, glow).copy(alpha = 0.85f)
-    for (f in levels) {
-        for (d in listOf(0f, 0.022f)) {
-            val yFront = h * (f + d)
-            val yBack = bt + (bb - bt) * (f + d)
-            drawLine(rail, Offset(0f, yFront), Offset(bl, yBack), strokeWidth = w * 0.007f)
-            drawLine(rail, Offset(w, yFront), Offset(br, yBack), strokeWidth = w * 0.007f)
-        }
-    }
-
-    // felső fűtőszál
-    val heater = Path().apply {
-        val y0 = h * 0.05f
-        val y1 = h * 0.105f
-        val n = 8
-        for (i in 0 until n) {
-            val x0 = w * 0.18f + w * 0.64f * i / n
-            val x1 = w * 0.18f + w * 0.64f * (i + 1) / n
-            val ya = if (i % 2 == 1) y1 else y0
-            val yb = if (i % 2 == 1) y0 else y1
-            if (i == 0) moveTo(x0, ya) else lineTo(x0, ya)
-            lineTo(x1, ya)
-            lineTo(x1, yb)
-        }
-    }
-    if (glow > 0f) {
-        drawPath(
-            heater, Color(0xFFFF7A30).copy(alpha = 0.25f * glow),
-            style = Stroke(width = w * 0.03f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-        )
-    }
-    drawPath(
-        heater, hot(0xFF3B3633, 0xFFFF6A2A, glow),
-        style = Stroke(width = w * 0.009f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-    )
-
-    // tepsi a 4. szinten
-    val f = levels[3] + 0.01f
-    val tyF = h * f
-    val tyB = bt + (bb - bt) * f
-    val txF0 = w * 0.03f
-    val txF1 = w * 0.97f
-    val txB0 = bl + (br - bl) * 0.02f
-    val txB1 = br - (br - bl) * 0.02f
-    fun at(u: Float, v: Float): Offset {
-        val x0 = txB0 + (txF0 - txB0) * v
-        val x1 = txB1 + (txF1 - txB1) * v
-        return Offset(x0 + (x1 - x0) * u, tyB + (tyF - tyB) * v)
-    }
-    drawPath(
-        polygon(at(0f, 0f), at(1f, 0f), at(1f, 1f), at(0f, 1f)),
-        Brush.verticalGradient(
-            listOf(hot(0xFF232224, 0xFF3A2414, glow), hot(0xFF302E31, 0xFF50311C, glow)), tyB, tyF
-        )
-    )
-    drawPath(
-        polygon(at(0f, 1f), at(1f, 1f), Offset(txF1, tyF + h * 0.025f), Offset(txF0, tyF + h * 0.025f)),
-        hot(0xFF3C3A3D, 0xFF7A4A2A, glow)
-    )
-
-    // sült hús, paradicsom, cukkini, burgonya, lilahagyma
-    for (bit in foodBits) {
-        val p = at(bit.u, bit.v)
-        val s = w * (0.011f + 0.015f * bit.v)
-        var rx = s
-        var ry = s * 0.8f
-        var ring = false
-        val base: Long
-        val hi: Long
-        val shade: Long
-        when {
-            bit.kind < 0.22f -> { base = 0xFFA85A22; hi = 0xFFE5A25A; shade = 0xFF5C2A0E; rx = s * 1.8f; ry = s * 0.9f }
-            bit.kind < 0.50f -> { base = 0xFFC8301A; hi = 0xFFFF8A6A; shade = 0xFF6E1208 }
-            bit.kind < 0.68f -> { base = 0xFF3E6A28; hi = 0xFF9CC46A; shade = 0xFF1F3A12; ring = true }
-            bit.kind < 0.84f -> { base = 0xFFD09A3A; hi = 0xFFF4D27A; shade = 0xFF7A5216; rx = s * 1.2f; ry = s * 0.75f }
-            else -> { base = 0xFF7A2E4F; hi = 0xFFC06A8E; shade = 0xFF3E1226 }
-        }
-        rotate(degrees = (bit.tilt - 0.5f) * 40f, pivot = p) {
-            drawOval(
-                Color.Black.copy(alpha = 0.35f),
-                topLeft = Offset(p.x - rx + rx * 0.12f, p.y - ry + ry * 0.3f),
-                size = Size(rx * 2, ry * 2)
-            )
-            drawOval(
-                Brush.radialGradient(
-                    0f to Color(hi), 0.45f to Color(base), 1f to Color(shade),
-                    center = Offset(p.x - rx * 0.35f, p.y - ry * 0.4f),
-                    radius = maxOf(rx, ry) * 1.3f
-                ),
-                topLeft = Offset(p.x - rx, p.y - ry),
-                size = Size(rx * 2, ry * 2)
-            )
-            if (ring) {
-                drawOval(
-                    Color(0xFFD8D29A),
-                    topLeft = Offset(p.x - rx * 0.72f, p.y - ry * 0.72f),
-                    size = Size(rx * 1.44f, ry * 1.44f)
-                )
-                drawOval(
-                    Color(0xFFB9B46E).copy(alpha = 0.8f),
-                    topLeft = Offset(p.x - rx * 0.3f, p.y - ry * 0.3f),
-                    size = Size(rx * 0.6f, ry * 0.6f)
-                )
-            }
-        }
-    }
-
+    // sötét sütő: elsötétített kép; lámpa és hő: egyre világosabb
+    val dark = (0.58f - 0.30f * lamp - 0.18f * glow).coerceIn(0.08f, 0.58f)
+    drawRect(Color.Black.copy(alpha = dark))
     // meleg fény felülről, a hőfokkal arányosan
     if (glow > 0f) {
         drawRect(
             Brush.radialGradient(
-                listOf(Color(0xFFFFA24A).copy(alpha = 0.42f * glow), Color(0x00FFA24A)),
-                Offset(w / 2, h * 0.1f), w * 0.85f
+                listOf(Color(0xFFFF9A40).copy(alpha = 0.32f * glow), Color(0x00FF9A40)),
+                Offset(w / 2, h * 0.15f), w * 0.8f
             )
         )
     }
-    // a sütőtér lámpája a bal felső sarokban
-    if (lamp > 0f) {
-        drawRect(
-            Brush.radialGradient(
-                listOf(Color(0xFFFFE2B0).copy(alpha = 0.30f * lamp), Color(0x00FFE2B0)),
-                Offset(w * 0.08f, h * 0.12f), w * 0.6f
-            )
-        )
-    }
-    // tükröződés az ajtóüvegen
-    drawPath(
-        polygon(Offset(w * 0.55f, 0f), Offset(w * 0.70f, 0f), Offset(w * 0.38f, h), Offset(w * 0.23f, h)),
-        Color.White.copy(alpha = 0.035f)
-    )
-    // sötétítés a szövegek mögött: fent a fejléc, balra a kijelző, lent átmenet a lapba
+    // sötétítés a szövegek mögött: fent a fejléc, balra a kijelző, jobbra az állapot
     drawRect(
-        Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent), 0f, h * 0.3f),
+        Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent), 0f, h * 0.3f),
         size = Size(w, h * 0.3f)
     )
     drawRect(
         Brush.radialGradient(
-            listOf(Color.Black.copy(alpha = 0.45f), Color.Transparent),
-            Offset(w * 0.25f, h * 0.62f), w * 0.32f
+            listOf(Color.Black.copy(alpha = 0.5f), Color.Transparent),
+            Offset(w * 0.25f, h * 0.62f), w * 0.34f
         )
     )
     drawRect(
         Brush.radialGradient(
-            listOf(Color.Black.copy(alpha = 0.35f), Color.Transparent),
-            Offset(w * 0.74f, h * 0.66f), w * 0.36f
+            listOf(Color.Black.copy(alpha = 0.45f), Color.Transparent),
+            Offset(w * 0.74f, h * 0.64f), w * 0.38f
         )
     )
+    // lent átmenet a lap hátterébe
     drawRect(
-        Brush.verticalGradient(listOf(fade.copy(alpha = 0f), fade.copy(alpha = 0.85f)), h * 0.55f, h),
-        topLeft = Offset(0f, h * 0.55f),
-        size = Size(w, h * 0.45f)
+        Brush.verticalGradient(listOf(fade.copy(alpha = 0f), fade.copy(alpha = 0.85f)), h * 0.6f, h),
+        topLeft = Offset(0f, h * 0.6f),
+        size = Size(w, h * 0.4f)
     )
 }
 
