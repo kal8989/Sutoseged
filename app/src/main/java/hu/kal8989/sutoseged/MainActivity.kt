@@ -160,8 +160,8 @@ fun PlannerScreen(store: Store, st: PlannerState) {
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .imePadding()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -547,8 +547,8 @@ fun SavedScreen(store: Store) {
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
                 .imePadding()
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -690,27 +690,44 @@ fun OvenScreen(store: Store) {
     var fast by remember { mutableStateOf(false) }
     var blinkEnd by remember { mutableStateOf(store.blinkAtEnd) }
     var msg by remember { mutableStateOf<String?>(null) }
+    var tempMsg by remember { mutableStateOf<String?>(null) }
+    var timeMsg by remember { mutableStateOf<String?>(null) }
+    var alarmMsg by remember { mutableStateOf<String?>(null) }
     var working by remember { mutableStateOf(false) }
 
     val modeUid = OvenPrograms.manualModes.firstOrNull { it.first == modeName }?.second ?: 8209
     val isGrill = OvenPrograms.isGrill(modeUid)
     val range = OvenPrograms.tempRange(modeUid)
 
-    fun cmd(block: () -> Result<String>) {
+    /** A visszajelzés ott jelenik meg, ahol a gombot megnyomtad, nem a lap alján. */
+    fun send(set: (String?) -> Unit, block: () -> Result<String>) {
         working = true
-        msg = "Küldés…"
+        set("Küldés…")
         scope.launch {
             val r = withContext(Dispatchers.IO) { block() }
             working = false
-            msg = r.fold({ it }, { it.message ?: "Nem sikerült." })
+            set(r.fold({ "✓ $it" }, { it.message ?: "Nem sikerült." }))
         }
+    }
+
+    fun cmd(block: () -> Result<String>) = send({ msg = it }, block)
+
+    // A nyugtázás pár másodperc után magától eltűnik.
+    LaunchedEffect(tempMsg) {
+        if (tempMsg?.startsWith("✓") == true) { delay(5000); tempMsg = null }
+    }
+    LaunchedEffect(timeMsg) {
+        if (timeMsg?.startsWith("✓") == true) { delay(5000); timeMsg = null }
+    }
+    LaunchedEffect(alarmMsg) {
+        if (alarmMsg?.startsWith("✓") == true) { delay(5000); alarmMsg = null }
     }
 
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .imePadding()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -806,9 +823,14 @@ fun OvenScreen(store: Store) {
                     )
                 }
                 OutlinedButton(
-                    onClick = { cmd { LocalOven.setLevel(store, level.toIntOrNull() ?: 2) } },
+                    onClick = {
+                        send({ tempMsg = it }) { LocalOven.setLevel(store, level.toIntOrNull() ?: 2) }
+                    },
                     enabled = !working
                 ) { Text("Beállít") }
+            }
+            tempMsg?.let {
+                Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
             }
         } else {
             Row(
@@ -831,19 +853,20 @@ fun OvenScreen(store: Store) {
                     onClick = {
                         val c = temp.toIntOrNull()
                         if (c == null || c !in range) {
-                            msg = "A hőfok ennél a módnál ${range.first} és ${range.last} °C között lehet."
+                            tempMsg = "A hőfok ${range.first} és ${range.last} °C között lehet."
                         } else {
-                            cmd { LocalOven.setTemp(store, c) }
+                            send({ tempMsg = it }) { LocalOven.setTemp(store, c) }
                         }
                     },
                     enabled = !working
                 ) { Text("Beállít") }
             }
             Text(
-                "Megengedett: ${range.first}–${range.last} °C" +
-                    (LocalOven.currentTemp()?.let { "   ·   jelenleg $it °C" } ?: ""),
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                tempMsg ?: ("Megengedett: ${range.first}–${range.last} °C" +
+                    (LocalOven.currentTemp()?.let { "   ·   jelenleg $it °C" } ?: "")),
+                fontSize = 13.sp,
+                color = if (tempMsg != null) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
 
@@ -868,17 +891,18 @@ fun OvenScreen(store: Store) {
             OutlinedButton(
                 onClick = {
                     val m = mins.toIntOrNull()
-                    if (m == null || m < 1) msg = "Az időt percben add meg."
-                    else cmd { LocalOven.setDurationMin(store, m) }
+                    if (m == null || m < 1) timeMsg = "Az időt percben add meg."
+                    else send({ timeMsg = it }) { LocalOven.setDurationMin(store, m) }
                 },
                 enabled = !working
             ) { Text("Beállít") }
         }
         Text(
-            LocalOven.remainingMin()?.let { "Hátralévő: $it perc" }
-                ?: "A hőfok és az idő sütés közben is átállítható.",
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            timeMsg ?: (LocalOven.remainingMin()?.let { "Hátralévő: $it perc" }
+                ?: "A hőfok és az idő sütés közben is átállítható."),
+            fontSize = 13.sp,
+            color = if (timeMsg != null) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -930,7 +954,7 @@ fun OvenScreen(store: Store) {
                 },
                 enabled = !working,
                 modifier = Modifier.weight(1f)
-            ) { Text(if (LocalOven.powerOn()) "Készenlét" else "Bekapcsolás") }
+            ) { Text(if (LocalOven.powerOn()) "Kikapcsolás" else "Bekapcsolás") }
         }
 
         HorizontalDivider()
@@ -997,12 +1021,13 @@ fun OvenScreen(store: Store) {
             OutlinedButton(
                 onClick = {
                     val m = alarm.toIntOrNull()
-                    if (m == null || m < 1) msg = "Az időzítőt percben add meg."
-                    else cmd { LocalOven.setAlarmMin(store, m) }
+                    if (m == null || m < 1) alarmMsg = "Az időzítőt percben add meg."
+                    else send({ alarmMsg = it }) { LocalOven.setAlarmMin(store, m) }
                 },
                 enabled = !working
             ) { Text("Indít") }
         }
+        alarmMsg?.let { Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
 
         msg?.let { Text(it, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary) }
 
@@ -1044,8 +1069,8 @@ fun SettingsScreen(store: Store) {
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .imePadding()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
