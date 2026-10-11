@@ -945,9 +945,12 @@ private fun OvenBackdrop(heat: Float, lampOn: Boolean, fade: Color, modifier: Mo
 
 private fun hot(cold: Long, warm: Long, t: Float): Color = lerp(Color(cold), Color(warm), t)
 
-private fun polygon(vararg pts: Offset): Path = Path().apply {
-    moveTo(pts[0].x, pts[0].y)
-    for (i in 1 until pts.size) lineTo(pts[i].x, pts[i].y)
+// Négy sarokpont külön paraméterként: az Offset értékosztály, vararg-ként nem adható át.
+private fun polygon(a: Offset, b: Offset, c: Offset, d: Offset): Path = Path().apply {
+    moveTo(a.x, a.y)
+    lineTo(b.x, b.y)
+    lineTo(c.x, c.y)
+    lineTo(d.x, d.y)
     close()
 }
 
