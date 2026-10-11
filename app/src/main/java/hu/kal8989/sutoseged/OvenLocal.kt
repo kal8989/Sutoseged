@@ -18,6 +18,9 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
@@ -176,6 +179,10 @@ private class MiniWebSocket(raw: InputStream, private val out: OutputStream) {
     private val rnd = SecureRandom()
     private val writeLock = Any()
 
+    /** Mikor jött utoljára bármilyen keret a sütőtől (a kapcsolatfigyelőnek). */
+    @Volatile var lastRx = System.currentTimeMillis()
+        private set
+
     fun handshake(host: String, port: Int, path: String) {
         val nonce = ByteArray(16).also { rnd.nextBytes(it) }
         val key = Base64.encodeToString(nonce, Base64.NO_WRAP)
@@ -244,6 +251,7 @@ private class MiniWebSocket(raw: InputStream, private val out: OutputStream) {
             if (mask != null) {
                 for (i in payload.indices) payload[i] = (payload[i].toInt() xor mask[i % 4].toInt()).toByte()
             }
+            lastRx = System.currentTimeMillis()
 
             if (op == 0x8) {                       // close
                 runCatching { writeFrame(0x8, ByteArray(0)) }
@@ -302,22 +310,36 @@ private class OvenSession(
     private val deviceId: String
 ) {
     private val psk = decodePsk(pskB64)
-    private var socket: Socket? = null
-    private var proto: TlsClientProtocol? = null
-    private var ws: MiniWebSocket? = null
+    @Volatile private var socket: Socket? = null
+    @Volatile private var proto: TlsClientProtocol? = null
+    @Volatile private var ws: MiniWebSocket? = null
 
     @Volatile private var sid: Long = 0
     @Volatile private var txId: Long = 1
     @Volatile var ready = false
         private set
 
+    /**
+     * Miért zártuk le mi magunk: null = nem mi zártuk (a sütő vagy a hálózat),
+     * "" = szándékos bontás (nem hiba), egyéb = a kapcsolatfigyelő üzenete.
+     */
+    @Volatile var closeReason: String? = null
+        private set
+
     private val sendLock = Any()
+
+    /** A választ váró kérések, üzenetazonosító szerint. */
+    private val pending = ConcurrentHashMap<Long, ArrayBlockingQueue<JSONObject>>()
+
+    val isOpen: Boolean get() = ws != null
+
+    val lastRx: Long get() = ws?.lastRx ?: 0L
 
     fun open() {
         val s = Socket()
         s.connect(InetSocketAddress(ip, PORT), 8000)
         // Olvasási időkorlát nélkül: egy félbeszakadt TLS-rekord után a kapcsolat
-        // amúgy sem folytatható, a lezárás pedig magától kiengedi az olvasó szálat.
+        // amúgy sem folytatható. A néma kapcsolatot a LocalOven figyelője bontja.
         s.soTimeout = 0
         s.tcpNoDelay = true
         socket = s
@@ -349,6 +371,12 @@ private class OvenSession(
             val resource = m.optString("resource")
             val action = m.optString("action")
 
+            // A sütő minden kérésünkre RESPONSE-szal felel, ugyanazzal az msgID-vel;
+            // hiba esetén "code" mező is van benne.
+            if (action == "RESPONSE") {
+                pending.remove(m.optLong("msgID", -1L))?.offer(m)
+            }
+
             if (resource == "/ei/initialValues" && action == "POST") {
                 sid = m.optLong("sID")
                 val data = m.optJSONArray("data")?.optJSONObject(0)
@@ -363,7 +391,9 @@ private class OvenSession(
                 continue
             }
 
-            if (resource == "/ci/services" && action == "RESPONSE") {
+            // Csak az első alkalommal: a kapcsolatfigyelő később ugyanezzel a kéréssel
+            // ellenőrzi, él-e még a sütő, és az nem indíthatja újra a munkamenetet.
+            if (resource == "/ci/services" && action == "RESPONSE" && !ready) {
                 send("/ei/deviceReady", 2, "NOTIFY", null)
                 send("/ro/allMandatoryValues", 1, "GET", null)
                 ready = true
@@ -385,26 +415,72 @@ private class OvenSession(
         }
     }
 
-    /** Üzenet összeállítása kézzel, hogy a mezők sorrendje pontosan a megszokott legyen. */
+    /** Elküldi az üzenetet, válaszra nem vár. */
     fun send(resource: String, version: Int, action: String, data: String?) {
+        post(resource, version, action, data, null)
+    }
+
+    /**
+     * Elküldi az üzenetet, és megvárja rá a sütő válaszát.
+     * Null, ha a megadott időn belül nem jött válasz.
+     */
+    fun request(
+        resource: String,
+        version: Int,
+        action: String,
+        data: String?,
+        timeoutMs: Long = 3000
+    ): JSONObject? {
+        val q = ArrayBlockingQueue<JSONObject>(1)
+        val id = post(resource, version, action, data, q)
+        return try {
+            q.poll(timeoutMs, TimeUnit.MILLISECONDS)
+        } finally {
+            pending.remove(id)
+        }
+    }
+
+    /** Üzenet összeállítása kézzel, hogy a mezők sorrendje pontosan a megszokott legyen. */
+    private fun post(
+        resource: String,
+        version: Int,
+        action: String,
+        data: String?,
+        waiter: ArrayBlockingQueue<JSONObject>?
+    ): Long =
         synchronized(sendLock) {
+            val id = txId++
+            if (waiter != null) pending[id] = waiter
             val sb = StringBuilder()
             sb.append("{\"sID\":").append(sid)
-                .append(",\"msgID\":").append(txId++)
+                .append(",\"msgID\":").append(id)
                 .append(",\"resource\":\"").append(resource).append('"')
                 .append(",\"version\":").append(version)
                 .append(",\"action\":\"").append(action).append('"')
             if (data != null) sb.append(",\"data\":").append(data)
             sb.append('}')
-            ws?.sendText(sb.toString()) ?: throw java.io.IOException("nincs kapcsolat")
+            try {
+                val w = ws ?: throw java.io.IOException("nincs kapcsolat")
+                w.sendText(sb.toString())
+            } catch (e: Exception) {
+                pending.remove(id)
+                throw e
+            }
+            id
         }
-    }
 
     private fun raw(json: String) {
         synchronized(sendLock) { ws?.sendText(json) }
     }
 
-    fun close() {
+    fun ping() {
+        val w = ws ?: throw java.io.IOException("nincs kapcsolat")
+        w.ping()
+    }
+
+    /** Lezárja a kapcsolatot. A reason: "" = szándékos bontás, egyéb = hibaüzenet. */
+    fun close(reason: String = "") {
+        if (closeReason == null) closeReason = reason
         runCatching { ws?.close() }
         runCatching { proto?.close() }
         runCatching { socket?.close() }
@@ -440,16 +516,30 @@ object LocalOven {
     /** A sütő élő értékei azonosító szerint. */
     val values = mutableStateMapOf<Int, Any>()
 
-    private var session: OvenSession? = null
+    /** Előtérben van-e az app – csak ilyenkor kapcsolódunk újra magunktól. */
+    @Volatile var foreground = false
+
+    @Volatile private var session: OvenSession? = null
     private val main = Handler(Looper.getMainLooper())
 
     // A felület állapota a Compose-é, a döntésekhez viszont szálbiztos mezők kellenek:
     // a kapcsolatot háttérszálról is építjük, a kijelzést pedig a fő szálon frissítjük.
     @Volatile private var active = false
     @Volatile private var failure: String? = null
+    @Volatile private var retries = 0
+
+    // a sütés végének felismerése
+    @Volatile private var lastOp: Int? = null
+    @Volatile private var sawRunning = false
     @Volatile private var finishHandled = false
+
+    // a hátralévő idő helyi továbbszámolása
     @Volatile private var remBaseSec = -1
     @Volatile private var remBaseAt = 0L
+    @Volatile private var remFrozen = false
+
+    private const val PING_EVERY_MS = 20_000L
+    private const val SILENCE_LIMIT_MS = 20_000L
 
     private fun ui(block: () -> Unit) = main.post(block)
 
@@ -472,15 +562,17 @@ object LocalOven {
 
     /**
      * A sütő csak akkor küld hátralévő időt, amikor az változik, leállításkor
-     * pedig nem nullázza – ezért csak futás közben mutatjuk, és a két jelentés
-     * között itt számoljuk tovább, hogy ne ugráljon.
+     * pedig nem nullázza – ezért csak futó (vagy szüneteltetett) programnál
+     * mutatjuk, és a két jelentés között itt számoljuk tovább. Szünet alatt áll.
      */
     fun remainingSec(): Int? {
         val op = (values[OvenUid.ST_OPERATION] as? Number)?.toInt()
-        if (op != 3 && op != 2) return null
-        if (remBaseSec < 0) return null
+        if (op != 2 && op != 3 && op != 4) return null
+        val base = remBaseSec
+        if (base < 0) return null
+        if (remFrozen) return base
         val passed = ((System.currentTimeMillis() - remBaseAt) / 1000).toInt()
-        return (remBaseSec - passed).coerceAtLeast(0)
+        return (base - passed).coerceAtLeast(0)
     }
 
     fun remainingMin(): Int? = remainingSec()?.let { if (it > 0) (it + 59) / 60 else null }
@@ -495,7 +587,7 @@ object LocalOven {
         return ((total - rem).toFloat() / total).coerceIn(0f, 1f)
     }
 
-    /** 95 perc fölött óra:perc:másodperc, különben perc:másodperc. */
+    /** Egy óra fölött óra:perc:másodperc, különben perc:másodperc. */
     fun formatClock(sec: Int): String {
         val s = sec.coerceAtLeast(0)
         return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, (s % 3600) / 60, s % 60)
@@ -507,6 +599,9 @@ object LocalOven {
     fun powerOn(): Boolean = (values[OvenUid.POWER_STATE] as? Number)?.toInt() == 2
 
     fun setpoint(): Int? = (values[OvenUid.OPT_TEMPERATURE] as? Number)?.toInt()
+
+    /** A grillfokozat, ha a sütő jelenti. */
+    fun level(): Int? = (values[OvenUid.OPT_LEVEL] as? Number)?.toInt()
 
     fun doorOpen(): Boolean = (values[OvenUid.ST_DOOR] as? Number)?.toInt() == 0
 
@@ -550,64 +645,174 @@ object LocalOven {
         }
         active = true
         failure = null
-        ui { busy = true; status = "Kapcsolódás…"; lastError = null }
+        // Új kapcsolat, tiszta lap: a régi értékek alapján nem dönthetünk.
+        lastOp = null
+        sawRunning = false
+        finishHandled = false
+        remBaseSec = -1
+        remFrozen = false
+        ui { busy = true; status = "Kapcsolódás…"; lastError = null; values.clear() }
 
         val deviceId = store.ovenDeviceId
         thread(name = "oven-link", isDaemon = true) {
             val s = OvenSession(ip, psk, deviceId)
             session = s
+            var wasReady = false
             try {
                 s.open()
+                startWatchdog(s)
                 ui { status = "Munkamenet nyitása…" }
                 s.pump(
-                    onValues = { map ->
-                        (map[OvenUid.ST_REMAINING] as? Number)?.toInt()?.let {
-                            remBaseSec = it
-                            remBaseAt = System.currentTimeMillis()
-                        }
-                        checkFinish(store, map)
-                        ui { values.putAll(map) }
-                    },
-                    onReady = { ui { connected = true; busy = false; status = "Kapcsolódva" } }
+                    onValues = { map -> onOvenValues(store, map) },
+                    onReady = {
+                        wasReady = true
+                        retries = 0
+                        ui { connected = true; busy = false; status = "Kapcsolódva" }
+                    }
                 )
-                ui { status = "A sütő lezárta a kapcsolatot" }
+                val why = s.closeReason
+                if (session === s && why != "") {
+                    val text = why ?: "A sütő lezárta a kapcsolatot."
+                    failure = text
+                    ui { status = "Nincs kapcsolat"; lastError = text }
+                }
             } catch (e: Exception) {
-                val msg = humanError(e)
-                failure = msg
-                ui { lastError = msg; status = "Nincs kapcsolat" }
+                val why = s.closeReason
+                // Szándékos bontásnál ("") nincs mit jelenteni.
+                if (session === s && why != "") {
+                    val msg = if (why.isNullOrEmpty()) humanError(e) else why
+                    failure = msg
+                    ui { lastError = msg; status = "Nincs kapcsolat" }
+                }
             } finally {
                 runCatching { s.close() }
-                session = null
-                active = false
-                ui { connected = false; busy = false }
+                // Ha közben bontottak és újra kapcsolódtak, a régi szál nem nyúlhat az újhoz.
+                if (session === s) {
+                    session = null
+                    active = false
+                    remBaseSec = -1
+                    ui { connected = false; busy = false; values.clear() }
+                    // Működő kapcsolat szakadt meg, és az app előtérben van: újrapróbálja.
+                    if (wasReady && foreground && retries < 3) {
+                        retries++
+                        main.postDelayed({ connect(store) }, 3000)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Kapcsolatfigyelő: ha egy ideje semmi sem jött a sütőtől, megkérdezi, él-e még.
+     * Ha nem felel, bontja a kapcsolatot – különben egy elalvás vagy wifi-szakadás
+     * után az app "Kapcsolódva" állapotban, befagyott értékekkel maradna.
+     */
+    private fun startWatchdog(s: OvenSession) {
+        thread(name = "oven-watchdog", isDaemon = true) {
+            while (true) {
+                try {
+                    Thread.sleep(PING_EVERY_MS)
+                } catch (e: InterruptedException) {
+                    return@thread
+                }
+                if (session !== s || !s.isOpen) return@thread
+                try {
+                    s.ping()
+                } catch (e: Exception) {
+                    s.close("A kapcsolat megszakadt.")
+                    return@thread
+                }
+                if (s.ready && System.currentTimeMillis() - s.lastRx > SILENCE_LIMIT_MS) {
+                    val answer = try {
+                        s.request("/ci/services", 1, "GET", null, 6000)
+                    } catch (e: Exception) {
+                        null
+                    }
+                    if (answer == null && session === s) {
+                        s.close("A sütő nem válaszol – a kapcsolat megszakadt.")
+                        return@thread
+                    }
+                }
             }
         }
     }
 
     fun disconnect() {
-        runCatching { session?.close() }
+        val s = session
         session = null
         active = false
         failure = null
+        remBaseSec = -1
+        // A lezárás hálózati írással jár, az a fő szálon tilos.
+        if (s != null) thread(name = "oven-close", isDaemon = true) { runCatching { s.close("") } }
         ui {
             connected = false
             busy = false
             status = "Nincs kapcsolat"
+            lastError = null
             values.clear()
+        }
+    }
+
+    /** Minden beérkező értékcsomag ide fut be (az olvasó szálon). */
+    private fun onOvenValues(store: Store, map: Map<Int, Any>) {
+        val op = (map[OvenUid.ST_OPERATION] as? Number)?.toInt()
+        val prev = lastOp
+        if (op != null) lastOp = op
+        trackRemaining(map, op, prev)
+        checkFinish(store, map, op)
+        ui { values.putAll(map) }
+    }
+
+    private fun trackRemaining(map: Map<Int, Any>, op: Int?, prev: Int?) {
+        val now = System.currentTimeMillis()
+        if (op != null && op != prev) {
+            when (op) {
+                4 -> {                                   // szünet: megáll a számolás
+                    if (remBaseSec >= 0 && !remFrozen) {
+                        remBaseSec = (remBaseSec - ((now - remBaseAt) / 1000).toInt()).coerceAtLeast(0)
+                    }
+                    remFrozen = true
+                    remBaseAt = now
+                }
+                2, 3 -> {                                // folytatás: innen számol tovább
+                    if (remFrozen) {
+                        remFrozen = false
+                        remBaseAt = now
+                    }
+                }
+                else -> {                                // vége, leállítva, készenlét
+                    remBaseSec = -1
+                    remFrozen = false
+                }
+            }
+        }
+        (map[OvenUid.ST_REMAINING] as? Number)?.toInt()?.let {
+            if (op == null || op == 2 || op == 3 || op == 4) {
+                remBaseSec = it
+                remBaseAt = now
+            }
         }
     }
 
     /**
      * A sütés végét két jel is mutatja: az üzemállapot "kész" lesz, vagy
-     * megjön a ProgramFinished esemény. Ha kérted, ilyenkor villog a lámpa.
+     * megjön a ProgramFinished esemény. Csak akkor számít, ha ebben a
+     * kapcsolatban láttuk is futni a programot – így a kapcsolódáskor talált
+     * "kész" állapot nem villogtat.
      */
-    private fun checkFinish(store: Store, map: Map<Int, Any>) {
-        val op = (map[OvenUid.ST_OPERATION] as? Number)?.toInt()
+    private fun checkFinish(store: Store, map: Map<Int, Any>, op: Int?) {
         val ev = (map[OvenUid.EV_PROGRAM_FINISHED] as? Number)?.toInt()
-        if (op != null && op != 6) finishHandled = false
+        if (op == 3) {
+            sawRunning = true
+            finishHandled = false
+        } else if (op == 0 || op == 1) {
+            sawRunning = false
+        }
         val finished = op == 6 || ev == 1
-        if (finished && !finishHandled) {
+        if (finished && sawRunning && !finishHandled) {
             finishHandled = true
+            sawRunning = false
             if (store.blinkAtEnd) {
                 thread(name = "oven-blink", isDaemon = true) { blink(store, 5) }
             }
@@ -627,6 +832,24 @@ object LocalOven {
                 "A titkosított kapcsolat nem jött létre. Valószínűleg hibás a kulcs."
             else -> t
         }
+    }
+
+    /** A sütő hibakódjai emberi nyelven. */
+    private fun codeText(code: Int): String = when (code) {
+        403 -> "a sütő nem engedi (kód 403) – nézd meg a távoli indítást és a gyerekzárat"
+        404 -> "a sütő nem ismeri ezt a beállítást (kód 404)"
+        409 -> "a sütő jelenlegi állapotában ez nem lehetséges (kód 409)"
+        else -> "a sütő elutasította (kód $code)"
+    }
+
+    /**
+     * Kiértékeli a sütő válaszát: hibát dob, ha hibakóddal felelt;
+     * true, ha visszaigazolta; false, ha nem jött válasz.
+     */
+    private fun accepted(resp: JSONObject?): Boolean {
+        if (resp == null) return false
+        if (resp.has("code")) throw java.io.IOException(codeText(resp.optInt("code")))
+        return true
     }
 
     // ------------------------------------------------------------ parancsok
@@ -664,8 +887,8 @@ object LocalOven {
 
     fun setValue(store: Store, uid: Int, value: String, what: String): Result<String> =
         run(store, what) { s ->
-            s.send("/ro/values", 1, "POST", "[{\"uid\":$uid,\"value\":$value}]")
-            what
+            val ok = accepted(s.request("/ro/values", 1, "POST", "[{\"uid\":$uid,\"value\":$value}]"))
+            if (ok) what else "$what (a sütő nem igazolta vissza)"
         }
 
     fun switchOn(store: Store) =
@@ -677,8 +900,10 @@ object LocalOven {
     fun enableRemoteStart(store: Store) =
         setValue(store, OvenUid.REMOTE_CONTROL_LEVEL, "2", "Távoli indítás engedélyezve")
 
-    fun abort(store: Store) =
-        setValue(store, OvenUid.ABORT_PROGRAM, "true", "A program leállítva")
+    fun abort(store: Store): Result<String> {
+        sawRunning = false                     // a kézi leállítás nem "sütés vége"
+        return setValue(store, OvenUid.ABORT_PROGRAM, "true", "A program leállítva")
+    }
 
     fun pause(store: Store) =
         setValue(store, OvenUid.PAUSE_PROGRAM, "true", "Szüneteltetve")
@@ -740,13 +965,16 @@ object LocalOven {
      */
     private fun prepareStart(s: OvenSession) {
         if (!powerOn()) {
-            s.send("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.POWER_STATE},\"value\":2}]")
+            accepted(s.request("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.POWER_STATE},\"value\":2}]"))
             Thread.sleep(1200)
+            val until = System.currentTimeMillis() + 3_000
+            while (System.currentTimeMillis() < until && !powerOn()) Thread.sleep(150)
         }
         val op = (values[OvenUid.ST_OPERATION] as? Number)?.toInt()
         if (op == 2 || op == 3 || op == 4 || op == 5) {
+            sawRunning = false
             runCatching {
-                s.send("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.ABORT_PROGRAM},\"value\":true}]")
+                s.request("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.ABORT_PROGRAM},\"value\":true}]")
             }
             // A sütő pár tized másodperc alatt ér készenlétbe; addig nem fogad új programot.
             val until = System.currentTimeMillis() + 6_000
@@ -756,7 +984,7 @@ object LocalOven {
                 Thread.sleep(200)
             }
             remBaseSec = -1
-            finishHandled = true
+            remFrozen = false
         }
         if (!remoteStartAllowed()) {
             throw java.io.IOException(
@@ -764,6 +992,17 @@ object LocalOven {
             )
         }
     }
+
+    /** A program indítása; hibakódnál érthető üzenettel áll meg. */
+    private fun startProgram(s: OvenSession, data: String, fastPreheat: Boolean): Boolean =
+        try {
+            accepted(s.request("/ro/activeProgram", 1, "POST", data, 5000))
+        } catch (e: java.io.IOException) {
+            if (fastPreheat) {
+                throw java.io.IOException("${e.message} – lehet, hogy ez a mód nem fogadja a gyors felfűtést")
+            }
+            throw e
+        }
 
     /** Kézi indítás a vezérlőlapról. */
     fun startManual(
@@ -776,11 +1015,14 @@ object LocalOven {
     ): Result<String> = run(store, "Indítás") { s ->
         prepareStart(s)
 
+        val range = OvenPrograms.tempRange(programUid)
         val opts = mutableListOf<String>()
         if (OvenPrograms.isGrill(programUid)) {
             level?.let { opts.add("{\"uid\":${OvenUid.OPT_LEVEL},\"value\":$it}") }
         } else {
-            temp?.let { opts.add("{\"uid\":${OvenUid.OPT_TEMPERATURE},\"value\":$it}") }
+            temp?.let {
+                opts.add("{\"uid\":${OvenUid.OPT_TEMPERATURE},\"value\":${it.coerceIn(range.first, range.last)}}")
+            }
         }
         minutes?.takeIf { it > 0 }?.let {
             opts.add("{\"uid\":${OvenUid.OPT_DURATION},\"value\":${it * 60}}")
@@ -794,8 +1036,8 @@ object LocalOven {
             if (opts.isNotEmpty()) append(",\"options\":[").append(opts.joinToString(",")).append(']')
             append("}]")
         }
-        s.send("/ro/activeProgram", 1, "POST", data)
-        "Elindítva: ${OvenPrograms.nameOf(programUid)}"
+        val ok = startProgram(s, data, fastPreheat)
+        "Elindítva: ${OvenPrograms.nameOf(programUid)}" + if (ok) "" else " (a sütő nem igazolta vissza)"
     }
 
     /** Egy tervfázis kiküldése: bekapcsolás, majd a program indítása a beállításaival. */
@@ -805,20 +1047,26 @@ object LocalOven {
 
         prepareStart(s)
 
+        val range = OvenPrograms.tempRange(prog)
         val opts = mutableListOf<String>()
+        var tempNote = ""
         if (OvenPrograms.isGrill(prog)) {
             OvenPrograms.level(phase.homerseklet)?.let {
                 opts.add("{\"uid\":${OvenUid.OPT_LEVEL},\"value\":$it}")
             }
         } else {
-            OvenPrograms.temperature(phase.homerseklet)?.let {
-                opts.add("{\"uid\":${OvenUid.OPT_TEMPERATURE},\"value\":$it}")
+            OvenPrograms.temperature(phase.homerseklet)?.let { t ->
+                // A terv néha a mód tartományán kívüli hőfokot ad; azt a sütő elutasítaná.
+                val c = t.coerceIn(range.first, range.last)
+                if (c != t) tempNote = " (a $t °C helyett $c °C, ennyit enged ez a mód)"
+                opts.add("{\"uid\":${OvenUid.OPT_TEMPERATURE},\"value\":$c}")
             }
         }
         if (phase.idoPerc > 0) {
             opts.add("{\"uid\":${OvenUid.OPT_DURATION},\"value\":${phase.idoPerc * 60}}")
         }
-        if (prog == OvenPrograms.PREHEATING) {
+        val fast = prog == OvenPrograms.PREHEATING
+        if (fast) {
             opts.add("{\"uid\":${OvenUid.OPT_FAST_PREHEAT},\"value\":true}")
         }
 
@@ -827,7 +1075,8 @@ object LocalOven {
             if (opts.isNotEmpty()) append(",\"options\":[").append(opts.joinToString(",")).append(']')
             append("}]")
         }
-        s.send("/ro/activeProgram", 1, "POST", data)
-        "Elindítva: ${phase.futesiMod}, ${phase.homerseklet}"
+        val ok = startProgram(s, data, fast)
+        "Elindítva: ${phase.futesiMod}, ${phase.homerseklet}$tempNote" +
+            if (ok) "" else " (a sütő nem igazolta vissza)"
     }
 }

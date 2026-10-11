@@ -67,6 +67,18 @@ A sütő a hátralévő időt (uid 544) csak változáskor küldi, és leállít
 ezért az app csak futó program mellett mutatja, és a két jelentés között helyben számolja
 tovább, hogy a kijelzés ne ragadjon be.
 
+A sütő minden kérésre `RESPONSE`-szal felel ugyanazzal az `msgID`-vel, hiba esetén `code`
+mezővel. Az app ezt megvárja (legfeljebb 3 s): hibakódnál érthető hibaüzenetet ad, válasz
+nélkül pedig „a sütő nem igazolta vissza” megjegyzést. A beállító csak akkor vált vissza
+sárgáról pirosra, amikor a sütő vissza is jelentette az új értéket. Hőfok, idő és
+grillfokozat csak futó vagy szüneteltetett programon állítható át; üresjáratban az érték az
+indításkor kerül ki.
+
+Kapcsolatfigyelő: 20 másodpercenként ping, és ha egy ideje semmi sem jött, egy `/ci/services`
+kérdés; ha arra sem felel a sütő, a kapcsolat bomlik. Előtérbe kerüléskor az app magától
+újrakapcsolódik, és egy élő kapcsolat megszakadásakor háromszor újrapróbálja. A sütés végi
+villogás csak akkor indul, ha az app ebben a kapcsolatban látta is futni a programot.
+
 ## Állapot
 
 Első verzió: fázistervező. Később tervezett:

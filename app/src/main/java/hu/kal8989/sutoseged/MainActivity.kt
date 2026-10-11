@@ -37,12 +37,15 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -51,6 +54,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 import kotlin.reflect.KProperty
 
 class MainActivity : ComponentActivity() {
@@ -125,6 +129,22 @@ fun App() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    // Előtérbe kerüléskor újra kapcsolódik: elalvás vagy wifi-váltás után
+    // ne maradjon "Kapcsolódva" felirat egy halott kapcsolaton.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) {
+                LocalOven.foreground = true
+                if (store.ovenConfigured) LocalOven.connect(store)
+            } else if (event == Lifecycle.Event.ON_STOP) {
+                LocalOven.foreground = false
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     Scaffold(
@@ -888,7 +908,7 @@ private fun ValueCard(
 
             Slider(
                 value = value.toFloat().coerceIn(sliderRange.start, sliderRange.endInclusive),
-                onValueChange = { onSlider(it.toInt()) },
+                onValueChange = { onSlider(it.roundToInt()) },
                 valueRange = sliderRange,
                 steps = sliderSteps
             )
@@ -923,6 +943,7 @@ fun OvenScreen(store: Store) {
     var modeDirty by remember { mutableStateOf(false) }
     var tempDirty by remember { mutableStateOf(false) }
     var timeDirty by remember { mutableStateOf(false) }
+    var levelDirty by remember { mutableStateOf(false) }
 
     var fast by remember { mutableStateOf(false) }
     var blinkEnd by remember { mutableStateOf(store.blinkAtEnd) }
@@ -956,6 +977,7 @@ fun OvenScreen(store: Store) {
     val ovenProgram = LocalOven.activeProgram()
     val ovenTemp = LocalOven.setpoint()
     val ovenDur = LocalOven.totalSec()
+    val ovenLevel = LocalOven.level()
 
     LaunchedEffect(ovenProgram, modeDirty) {
         if (!modeDirty && ovenProgram != null &&
@@ -977,6 +999,12 @@ fun OvenScreen(store: Store) {
             store.putForm("mMin", (ovenDur / 60).toString())
         }
     }
+    LaunchedEffect(ovenLevel, levelDirty) {
+        if (!levelDirty && ovenLevel != null && ovenLevel in 1..3) {
+            levelN = ovenLevel
+            store.putForm("mLevel", ovenLevel.toString())
+        }
+    }
     // Módváltáskor a hőfok beugrik az új mód tartományába.
     LaunchedEffect(modeUid) {
         val fixed = tempC.coerceIn(range.first, range.last)
@@ -986,23 +1014,40 @@ fun OvenScreen(store: Store) {
         }
     }
 
-    /** Elküld egy parancsot, és a válasz ott jelenik meg, ahol megnyomtad. */
-    fun send(set: (String?) -> Unit, clear: (() -> Unit)? = null, block: () -> Result<String>) {
+    /**
+     * Elküld egy parancsot, és a válasz ott jelenik meg, ahol megnyomtad.
+     * Ha van [confirmed] feltétel, a sárga csak akkor vált vissza pirosra
+     * ([onConfirmed]), amikor a sütő már vissza is jelentette az új értéket.
+     */
+    fun send(
+        set: (String?) -> Unit,
+        confirmed: (() -> Boolean)? = null,
+        onConfirmed: (() -> Unit)? = null,
+        block: () -> Result<String>
+    ) {
         working = true
         set("Küldés…")
         scope.launch {
             val r = withContext(Dispatchers.IO) { block() }
             working = false
             set(r.fold({ "✓ $it" }, { it.message ?: "Nem sikerült." }))
-            if (r.isSuccess && clear != null) {
-                // A sütő egy pillanattal később jelenti vissza az új értéket.
-                delay(1200)
-                clear()
+            if (r.isSuccess && onConfirmed != null) {
+                var ok = confirmed?.invoke() ?: true
+                val until = System.currentTimeMillis() + 6000
+                while (!ok && System.currentTimeMillis() < until) {
+                    delay(250)
+                    ok = confirmed?.invoke() ?: true
+                }
+                if (ok) onConfirmed()
+                else set("Elküldve, de a sütő nem jelezte vissza az új értéket – ezért maradt sárga.")
             }
         }
     }
 
-    fun cmd(block: () -> Result<String>) = send({ msg = it }, null, block)
+    fun cmd(block: () -> Result<String>) = send({ msg = it }, null, null, block)
+
+    // Átállítani csak futó programon lehet; üresjáratban az érték az indításkor kerül ki.
+    val canAdjust = LocalOven.running() || LocalOven.paused()
 
     LaunchedEffect(tempMsg) {
         if (tempMsg?.startsWith("✓") == true) { delay(5000); tempMsg = null }
@@ -1066,7 +1111,7 @@ fun OvenScreen(store: Store) {
 
         val current = LocalOven.currentTemp()
         val valueColor = if (isGrill) {
-            if (modeDirty) PendingColor else SyncedColor
+            if (levelDirty) PendingColor else SyncedColor
         } else {
             if (tempDirty) PendingColor else SyncedColor
         }
@@ -1264,6 +1309,7 @@ fun OvenScreen(store: Store) {
                                 selected = levelN == n,
                                 onClick = {
                                     levelN = n
+                                    levelDirty = true
                                     store.putForm("mLevel", n.toString())
                                 },
                                 label = { Text("$n.") }
@@ -1272,14 +1318,22 @@ fun OvenScreen(store: Store) {
                         Spacer(Modifier.weight(1f))
                         OutlinedButton(
                             onClick = {
-                                send({ tempMsg = it }) { LocalOven.setLevel(store, levelN) }
+                                send(
+                                    { tempMsg = it },
+                                    { LocalOven.level()?.let { it == levelN } ?: true },
+                                    { levelDirty = false }
+                                ) { LocalOven.setLevel(store, levelN) }
                             },
-                            enabled = !working
+                            enabled = !working && canAdjust
                         ) { Text("Beállít") }
                     }
-                    tempMsg?.let {
-                        Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
-                    }
+                    Text(
+                        tempMsg ?: if (canAdjust) "sütés közben is átállítható"
+                        else "indításkor kerül a sütőre",
+                        fontSize = 12.sp,
+                        color = if (tempMsg != null) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         } else {
@@ -1291,9 +1345,10 @@ fun OvenScreen(store: Store) {
                 color = if (tempDirty) PendingColor else SyncedColor,
                 sliderRange = range.first.toFloat()..range.last.toFloat(),
                 sliderSteps = ((range.last - range.first) / 5 - 1).coerceAtLeast(0),
-                enabled = !working,
+                enabled = !working && canAdjust,
                 message = tempMsg,
-                hint = "${range.first}–${range.last} °C  ·  sütés közben is átállítható",
+                hint = "${range.first}–${range.last} °C  ·  " +
+                    if (canAdjust) "sütés közben is átállítható" else "indításkor kerül a sütőre",
                 onMinus = {
                     tempC = (tempC - 5).coerceAtLeast(range.first); tempDirty = true
                     store.putForm("mTemp", tempC.toString())
@@ -1311,9 +1366,11 @@ fun OvenScreen(store: Store) {
                     if (tempC !in range) {
                         tempMsg = "A hőfok ${range.first} és ${range.last} °C között lehet."
                     } else {
-                        send({ tempMsg = it }, { tempDirty = false }) {
-                            LocalOven.setTemp(store, tempC)
-                        }
+                        send(
+                            { tempMsg = it },
+                            { LocalOven.setpoint() == tempC },
+                            { tempDirty = false }
+                        ) { LocalOven.setTemp(store, tempC) }
                     }
                 }
             )
@@ -1346,9 +1403,10 @@ fun OvenScreen(store: Store) {
             color = if (timeDirty) PendingColor else SyncedColor,
             sliderRange = 0f..240f,
             sliderSteps = 47,
-            enabled = !working,
+            enabled = !working && canAdjust,
             message = timeMsg,
-            hint = "0 = időzítés nélkül indul  ·  sütés közben is átállítható",
+            hint = "0 = időzítés nélkül  ·  " +
+                if (canAdjust) "sütés közben is átállítható" else "indításkor kerül a sütőre",
             onMinus = {
                 durMin = (durMin - 1).coerceAtLeast(0); timeDirty = true
                 store.putForm("mMin", durMin.toString())
@@ -1364,9 +1422,11 @@ fun OvenScreen(store: Store) {
             onTap = { editTime = true },
             onApply = {
                 if (durMin < 1) timeMsg = "Az időt legalább 1 percre állítsd."
-                else send({ timeMsg = it }, { timeDirty = false }) {
-                    LocalOven.setDurationMin(store, durMin)
-                }
+                else send(
+                    { timeMsg = it },
+                    { LocalOven.totalSec() == durMin * 60 },
+                    { timeDirty = false }
+                ) { LocalOven.setDurationMin(store, durMin) }
             }
         )
 
@@ -1395,11 +1455,22 @@ fun OvenScreen(store: Store) {
 
         Button(
             onClick = {
-                send({ msg = it }, {
-                    modeDirty = false
-                    tempDirty = false
-                    timeDirty = false
-                }) {
+                val grill = isGrill
+                send(
+                    { msg = it },
+                    {
+                        LocalOven.activeProgram() == modeUid &&
+                            (grill || LocalOven.setpoint() == tempC) &&
+                            (!grill || (LocalOven.level()?.let { it == levelN } ?: true)) &&
+                            (durMin == 0 || LocalOven.totalSec() == durMin * 60)
+                    },
+                    {
+                        modeDirty = false
+                        tempDirty = false
+                        timeDirty = false
+                        levelDirty = false
+                    }
+                ) {
                     LocalOven.startManual(
                         store, modeUid,
                         if (isGrill) null else tempC,
@@ -1428,7 +1499,7 @@ fun OvenScreen(store: Store) {
                     if (LocalOven.paused()) cmd { LocalOven.resume(store) }
                     else cmd { LocalOven.pause(store) }
                 },
-                enabled = !working,
+                enabled = !working && canAdjust,
                 modifier = Modifier.weight(1f)
             ) { Text(if (LocalOven.paused()) "Folytatás" else "Szünet") }
 
