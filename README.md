@@ -79,6 +79,14 @@ kérdés; ha arra sem felel a sütő, a kapcsolat bomlik. Előtérbe kerülésko
 újrakapcsolódik, és egy élő kapcsolat megszakadásakor háromszor újrapróbálja. A sütés végi
 villogás csak akkor indul, ha az app ebben a kapcsolatban látta is futni a programot.
 
+A Sütő fül fejléce a sütőtér rajza (Compose Canvas, `OvenBackdrop`): hátsó fal a
+ventilátorburkolattal, betolósínek, fűtőszál és egy tepsi sült zöldséggel. A belső fény a
+sütőtér tényleges hőfokával erősödik, a lámpa a sütő világításával kapcsol; rajta a kör alakú
+kijelző és az állapot.
+
+A mentett tervekhez több fénykép is tartozhat (`SavedPlan.photos`); az új kép a régiek mellé
+kerül, és képenként törölhető. A régi, egyképes mentések automatikusan átkerülnek.
+
 ## Állapot
 
 Első verzió: fázistervező. Később tervezett:

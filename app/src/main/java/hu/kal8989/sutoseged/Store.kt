@@ -142,7 +142,7 @@ class Store(context: Context) {
             inputSummary = inputSummary,
             plan = plan,
             notes = emptyList(),
-            photoPath = null
+            photos = emptyList()
         )
         savePlans(listOf(saved) + loadPlans())
         return saved
@@ -154,7 +154,7 @@ class Store(context: Context) {
 
     fun deletePlan(id: Long) {
         val plans = loadPlans()
-        plans.firstOrNull { it.id == id }?.photoPath?.let { runCatching { File(it).delete() } }
+        plans.firstOrNull { it.id == id }?.photos?.forEach { runCatching { File(it).delete() } }
         savePlans(plans.filter { it.id != id })
     }
 

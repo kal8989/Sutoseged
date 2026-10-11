@@ -11,6 +11,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -30,7 +32,14 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -40,6 +49,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
@@ -54,7 +65,11 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.random.Random
 import kotlin.reflect.KProperty
 
 class MainActivity : ComponentActivity() {
@@ -564,17 +579,41 @@ fun SavedScreen(store: Store) {
         var item by remember(current.id) { mutableStateOf(current) }
         var noteText by remember(current.id) { mutableStateOf("") }
         var pendingPhoto by remember(current.id) { mutableStateOf<File?>(null) }
+        var deletePhoto by remember(current.id) { mutableStateOf<String?>(null) }
 
         val cameraLauncher = rememberLauncherForActivityResult(
             ActivityResultContracts.TakePicture()
         ) { ok ->
-            if (ok) {
-                pendingPhoto?.let { f ->
-                    item = item.copy(photoPath = f.absolutePath)
+            val f = pendingPhoto
+            pendingPhoto = null
+            if (f != null) {
+                if (ok && f.length() > 0) {
+                    // Az új kép a korábbiak mellé kerül, nem a helyükre.
+                    item = item.copy(photos = item.photos + f.absolutePath)
                     store.updatePlan(item)
                     plans = store.loadPlans()
+                } else {
+                    runCatching { f.delete() }
                 }
             }
+        }
+
+        deletePhoto?.let { path ->
+            AlertDialog(
+                onDismissRequest = { deletePhoto = null },
+                title = { Text("Törlöd ezt a képet?") },
+                text = { Text("A többi kép és a jegyzetek megmaradnak.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        item = item.copy(photos = item.photos - path)
+                        store.updatePlan(item)
+                        plans = store.loadPlans()
+                        runCatching { File(path).delete() }
+                        deletePhoto = null
+                    }) { Text("Törlés") }
+                },
+                dismissButton = { TextButton(onClick = { deletePhoto = null }) { Text("Mégsem") } }
+            )
         }
 
         Column(
@@ -594,17 +633,12 @@ fun SavedScreen(store: Store) {
 
             PlanView(item.plan)
 
-            item.photoPath?.let { path ->
-                val bmp = remember(path) { BitmapFactory.decodeFile(path) }
-                bmp?.let {
-                    Image(
-                        bitmap = it.asImageBitmap(),
-                        contentDescription = "A kész étel",
-                        contentScale = ContentScale.FillWidth,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 260.dp)
-                    )
+            if (item.photos.isNotEmpty()) {
+                HorizontalDivider()
+                Text("Fényképek (${item.photos.size})", fontWeight = FontWeight.SemiBold)
+                // A legújabb kép van felül.
+                item.photos.asReversed().forEach { path ->
+                    PhotoItem(path, fmt) { deletePhoto = path }
                 }
             }
 
@@ -618,7 +652,7 @@ fun SavedScreen(store: Store) {
                     cameraLauncher.launch(uri)
                 },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text(if (item.photoPath == null) "Fénykép a kész ételről" else "Új fénykép") }
+            ) { Text(if (item.photos.isEmpty()) "Fénykép a kész ételről" else "Még egy fénykép") }
 
             HorizontalDivider()
             Text("Jegyzetek", fontWeight = FontWeight.SemiBold)
@@ -696,7 +730,8 @@ fun SavedScreen(store: Store) {
                     )
                     Text(
                         fmt.format(Date(sp.createdAt)) +
-                            if (sp.notes.isNotEmpty()) "  ·  ${sp.notes.size} jegyzet" else "",
+                            (if (sp.notes.isNotEmpty()) "  ·  ${sp.notes.size} jegyzet" else "") +
+                            (if (sp.photos.isNotEmpty()) "  ·  ${sp.photos.size} kép" else ""),
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -705,6 +740,73 @@ fun SavedScreen(store: Store) {
         }
         Spacer(Modifier.height(48.dp))
     }
+}
+
+/** Egy mentett fénykép: kicsinyítve töltjük be, hogy sok kép se fogyassza el a memóriát. */
+@Composable
+private fun PhotoItem(path: String, fmt: SimpleDateFormat, onDelete: () -> Unit) {
+    val bmp = remember(path) { loadPreview(path, 1280) }
+    val taken = remember(path) { File(path).lastModified() }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        if (bmp != null) {
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = "A kész étel",
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 300.dp)
+                    .clip(RoundedCornerShape(10.dp))
+            )
+        } else {
+            Text(
+                "A kép nem tölthető be.",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (taken > 0) fmt.format(Date(taken)) else "",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onDelete) {
+                Text("Kép törlése", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+/** Kicsinyített, a fényképező tájolása szerint elforgatott kép, vagy null. */
+private fun loadPreview(path: String, maxSide: Int): android.graphics.Bitmap? = try {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, bounds)
+    var sample = 1
+    while (bounds.outWidth / (sample * 2) >= maxSide || bounds.outHeight / (sample * 2) >= maxSide) {
+        sample *= 2
+    }
+    val bmp = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+    val rotation = when (
+        android.media.ExifInterface(path).getAttributeInt(
+            android.media.ExifInterface.TAG_ORIENTATION,
+            android.media.ExifInterface.ORIENTATION_NORMAL
+        )
+    ) {
+        android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+        android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+        android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+        else -> 0f
+    }
+    if (bmp != null && rotation != 0f) {
+        val m = android.graphics.Matrix().apply { postRotate(rotation) }
+        android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+    } else {
+        bmp
+    }
+} catch (e: Exception) {
+    null
 }
 
 // ---------------------------------------------------------------- Sütő vezérlése
@@ -757,21 +859,17 @@ private fun TempGauge(
     targetFraction: Float,
     currentFraction: Float,
     valueColor: Color,
+    size: Dp = 220.dp,
     content: @Composable () -> Unit
 ) {
-    val track = MaterialTheme.colorScheme.surfaceVariant
-    val live = MaterialTheme.colorScheme.primary
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(220.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(Modifier.size(220.dp)) {
-            val stroke = size.minDimension * 0.075f
+    val track = Color.White.copy(alpha = 0.16f)
+    val live = Color(0xFFFFD9A8)
+    Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.matchParentSize()) {
+            val stroke = this.size.minDimension * 0.075f
             val inset = stroke * 0.7f
             val tl = Offset(inset, inset)
-            val arcSize = Size(size.width - inset * 2, size.height - inset * 2)
+            val arcSize = Size(this.size.width - inset * 2, this.size.height - inset * 2)
             drawArc(
                 color = track,
                 startAngle = 135f, sweepAngle = 270f, useCenter = false,
@@ -792,13 +890,276 @@ private fun TempGauge(
                     color = live,
                     startAngle = 135f, sweepAngle = 270f * currentFraction, useCenter = false,
                     topLeft = Offset(inner, inner),
-                    size = Size(size.width - inner * 2, size.height - inner * 2),
+                    size = Size(this.size.width - inner * 2, this.size.height - inner * 2),
                     style = Stroke(width = stroke * 0.4f, cap = StrokeCap.Round)
                 )
             }
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) { content() }
     }
+}
+
+// ---------------------------------------------------------------- a sütőtér rajza
+
+private val HeroMuted = Color(0xFFD9CFC6)
+private val HeroShadow = Shadow(Color.Black.copy(alpha = 0.7f), Offset(0f, 1.5f), 6f)
+
+/** Szöveg a sütőtér képén: világos, enyhe árnyékkal, hogy a háttéren is olvasható legyen. */
+@Composable
+private fun HeroText(
+    text: String,
+    fontSize: TextUnit,
+    fontWeight: FontWeight = FontWeight.Normal,
+    color: Color = Color.White
+) {
+    Text(
+        text,
+        fontSize = fontSize,
+        fontWeight = fontWeight,
+        color = color,
+        maxLines = 1,
+        style = LocalTextStyle.current.copy(shadow = HeroShadow)
+    )
+}
+
+/** Egy darab sült zöldség vagy hús a tepsin (tepsibeli helye és fajtája). */
+private class FoodBit(val u: Float, val v: Float, val kind: Float, val tilt: Float)
+
+private val foodBits: List<FoodBit> = run {
+    val r = Random(7)
+    List(46) { FoodBit(0.06f + r.nextFloat() * 0.88f, 0.12f + r.nextFloat() * 0.76f, r.nextFloat(), r.nextFloat()) }
+        .sortedBy { it.v }
+}
+
+/**
+ * A sütőtér rajza a vezérlőlap fejlécéhez: hátsó fal a ventilátorburkolattal,
+ * oldalt a betolósínek, fent a fűtőszál, a 4. szinten tepsi sült zöldséggel.
+ * A belső fény a hőfokkal erősödik ([heat] 0..1), a lámpa külön kapcsol.
+ */
+@Composable
+private fun OvenBackdrop(heat: Float, lampOn: Boolean, fade: Color, modifier: Modifier = Modifier) {
+    val glow by animateFloatAsState(heat.coerceIn(0f, 1f), animationSpec = tween(1500), label = "glow")
+    val lamp by animateFloatAsState(if (lampOn) 1f else 0f, animationSpec = tween(600), label = "lamp")
+    Canvas(modifier) { drawOvenCavity(glow, lamp, fade) }
+}
+
+private fun hot(cold: Long, warm: Long, t: Float): Color = lerp(Color(cold), Color(warm), t)
+
+private fun polygon(vararg pts: Offset): Path = Path().apply {
+    moveTo(pts[0].x, pts[0].y)
+    for (i in 1 until pts.size) lineTo(pts[i].x, pts[i].y)
+    close()
+}
+
+private fun DrawScope.drawOvenCavity(glow: Float, lamp: Float, fade: Color) {
+    val w = size.width
+    val h = size.height
+    drawRect(hot(0xFF141110, 0xFF2A1409, glow))
+
+    // a sütőtér hátsó fala és a négy oldal, perspektívában
+    val bl = w * 0.2f
+    val br = w * 0.8f
+    val bt = h * 0.14f
+    val bb = h * 0.68f
+    val wall = hot(0xFF1E1C1E, 0xFF3D1D0B, glow)
+    val wallDark = hot(0xFF121113, 0xFF24100A, glow)
+    val back = hot(0xFF262428, 0xFF512811, glow)
+
+    drawPath(
+        polygon(Offset(0f, 0f), Offset(w, 0f), Offset(br, bt), Offset(bl, bt)),
+        Brush.verticalGradient(listOf(wallDark, wall), 0f, bt)
+    )
+    drawPath(
+        polygon(Offset(0f, h), Offset(bl, bb), Offset(br, bb), Offset(w, h)),
+        Brush.verticalGradient(listOf(wall, wallDark), bb, h)
+    )
+    drawPath(
+        polygon(Offset(0f, 0f), Offset(bl, bt), Offset(bl, bb), Offset(0f, h)),
+        Brush.horizontalGradient(listOf(wallDark, wall), 0f, bl)
+    )
+    drawPath(
+        polygon(Offset(w, 0f), Offset(br, bt), Offset(br, bb), Offset(w, h)),
+        Brush.horizontalGradient(listOf(wall, wallDark), br, w)
+    )
+    drawRect(
+        Brush.radialGradient(listOf(back, wall), Offset(w / 2, (bt + bb) / 2), (br - bl) * 0.6f),
+        topLeft = Offset(bl, bt),
+        size = Size(br - bl, bb - bt)
+    )
+
+    // a forró levegő ventilátorának burkolata a hátsó falon
+    val c = Offset(w / 2, (bt + bb) / 2)
+    val r = (bb - bt) * 0.40f
+    val metal = hot(0xFF48444A, 0xFF8A4C26, glow)
+    drawCircle(hot(0xFF1A191B, 0xFF30170B, glow), r, c)
+    for (i in 1..6) {
+        drawCircle(metal.copy(alpha = 0.9f), r * i / 6f, c, style = Stroke(width = w * 0.004f))
+    }
+    for (k in 0 until 28) {
+        val a = k / 28f * 2f * PI.toFloat()
+        drawLine(
+            metal.copy(alpha = 0.35f),
+            Offset(c.x + cos(a) * r * 0.3f, c.y + sin(a) * r * 0.3f),
+            Offset(c.x + cos(a) * r * 0.97f, c.y + sin(a) * r * 0.97f),
+            strokeWidth = w * 0.006f
+        )
+    }
+    drawCircle(metal, r * 0.12f, c)
+
+    // betolósínek, öt szint mindkét oldalon
+    val levels = listOf(0.2f, 0.36f, 0.52f, 0.68f, 0.84f)
+    val rail = hot(0xFF5A5652, 0xFFC07A45, glow).copy(alpha = 0.85f)
+    for (f in levels) {
+        for (d in listOf(0f, 0.022f)) {
+            val yFront = h * (f + d)
+            val yBack = bt + (bb - bt) * (f + d)
+            drawLine(rail, Offset(0f, yFront), Offset(bl, yBack), strokeWidth = w * 0.007f)
+            drawLine(rail, Offset(w, yFront), Offset(br, yBack), strokeWidth = w * 0.007f)
+        }
+    }
+
+    // felső fűtőszál
+    val heater = Path().apply {
+        val y0 = h * 0.05f
+        val y1 = h * 0.105f
+        val n = 8
+        for (i in 0 until n) {
+            val x0 = w * 0.18f + w * 0.64f * i / n
+            val x1 = w * 0.18f + w * 0.64f * (i + 1) / n
+            val ya = if (i % 2 == 1) y1 else y0
+            val yb = if (i % 2 == 1) y0 else y1
+            if (i == 0) moveTo(x0, ya) else lineTo(x0, ya)
+            lineTo(x1, ya)
+            lineTo(x1, yb)
+        }
+    }
+    if (glow > 0f) {
+        drawPath(
+            heater, Color(0xFFFF7A30).copy(alpha = 0.25f * glow),
+            style = Stroke(width = w * 0.03f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+    }
+    drawPath(
+        heater, hot(0xFF3B3633, 0xFFFF6A2A, glow),
+        style = Stroke(width = w * 0.009f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    )
+
+    // tepsi a 4. szinten
+    val f = levels[3] + 0.01f
+    val tyF = h * f
+    val tyB = bt + (bb - bt) * f
+    val txF0 = w * 0.03f
+    val txF1 = w * 0.97f
+    val txB0 = bl + (br - bl) * 0.02f
+    val txB1 = br - (br - bl) * 0.02f
+    fun at(u: Float, v: Float): Offset {
+        val x0 = txB0 + (txF0 - txB0) * v
+        val x1 = txB1 + (txF1 - txB1) * v
+        return Offset(x0 + (x1 - x0) * u, tyB + (tyF - tyB) * v)
+    }
+    drawPath(
+        polygon(at(0f, 0f), at(1f, 0f), at(1f, 1f), at(0f, 1f)),
+        Brush.verticalGradient(
+            listOf(hot(0xFF232224, 0xFF3A2414, glow), hot(0xFF302E31, 0xFF50311C, glow)), tyB, tyF
+        )
+    )
+    drawPath(
+        polygon(at(0f, 1f), at(1f, 1f), Offset(txF1, tyF + h * 0.025f), Offset(txF0, tyF + h * 0.025f)),
+        hot(0xFF3C3A3D, 0xFF7A4A2A, glow)
+    )
+
+    // sült hús, paradicsom, cukkini, burgonya, lilahagyma
+    for (bit in foodBits) {
+        val p = at(bit.u, bit.v)
+        val s = w * (0.011f + 0.015f * bit.v)
+        var rx = s
+        var ry = s * 0.8f
+        var ring = false
+        val base: Long
+        val hi: Long
+        val shade: Long
+        when {
+            bit.kind < 0.22f -> { base = 0xFFA85A22; hi = 0xFFE5A25A; shade = 0xFF5C2A0E; rx = s * 1.8f; ry = s * 0.9f }
+            bit.kind < 0.50f -> { base = 0xFFC8301A; hi = 0xFFFF8A6A; shade = 0xFF6E1208 }
+            bit.kind < 0.68f -> { base = 0xFF3E6A28; hi = 0xFF9CC46A; shade = 0xFF1F3A12; ring = true }
+            bit.kind < 0.84f -> { base = 0xFFD09A3A; hi = 0xFFF4D27A; shade = 0xFF7A5216; rx = s * 1.2f; ry = s * 0.75f }
+            else -> { base = 0xFF7A2E4F; hi = 0xFFC06A8E; shade = 0xFF3E1226 }
+        }
+        rotate(degrees = (bit.tilt - 0.5f) * 40f, pivot = p) {
+            drawOval(
+                Color.Black.copy(alpha = 0.35f),
+                topLeft = Offset(p.x - rx + rx * 0.12f, p.y - ry + ry * 0.3f),
+                size = Size(rx * 2, ry * 2)
+            )
+            drawOval(
+                Brush.radialGradient(
+                    0f to Color(hi), 0.45f to Color(base), 1f to Color(shade),
+                    center = Offset(p.x - rx * 0.35f, p.y - ry * 0.4f),
+                    radius = maxOf(rx, ry) * 1.3f
+                ),
+                topLeft = Offset(p.x - rx, p.y - ry),
+                size = Size(rx * 2, ry * 2)
+            )
+            if (ring) {
+                drawOval(
+                    Color(0xFFD8D29A),
+                    topLeft = Offset(p.x - rx * 0.72f, p.y - ry * 0.72f),
+                    size = Size(rx * 1.44f, ry * 1.44f)
+                )
+                drawOval(
+                    Color(0xFFB9B46E).copy(alpha = 0.8f),
+                    topLeft = Offset(p.x - rx * 0.3f, p.y - ry * 0.3f),
+                    size = Size(rx * 0.6f, ry * 0.6f)
+                )
+            }
+        }
+    }
+
+    // meleg fény felülről, a hőfokkal arányosan
+    if (glow > 0f) {
+        drawRect(
+            Brush.radialGradient(
+                listOf(Color(0xFFFFA24A).copy(alpha = 0.42f * glow), Color(0x00FFA24A)),
+                Offset(w / 2, h * 0.1f), w * 0.85f
+            )
+        )
+    }
+    // a sütőtér lámpája a bal felső sarokban
+    if (lamp > 0f) {
+        drawRect(
+            Brush.radialGradient(
+                listOf(Color(0xFFFFE2B0).copy(alpha = 0.30f * lamp), Color(0x00FFE2B0)),
+                Offset(w * 0.08f, h * 0.12f), w * 0.6f
+            )
+        )
+    }
+    // tükröződés az ajtóüvegen
+    drawPath(
+        polygon(Offset(w * 0.55f, 0f), Offset(w * 0.70f, 0f), Offset(w * 0.38f, h), Offset(w * 0.23f, h)),
+        Color.White.copy(alpha = 0.035f)
+    )
+    // sötétítés a szövegek mögött: fent a fejléc, balra a kijelző, lent átmenet a lapba
+    drawRect(
+        Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent), 0f, h * 0.3f),
+        size = Size(w, h * 0.3f)
+    )
+    drawRect(
+        Brush.radialGradient(
+            listOf(Color.Black.copy(alpha = 0.45f), Color.Transparent),
+            Offset(w * 0.25f, h * 0.62f), w * 0.32f
+        )
+    )
+    drawRect(
+        Brush.radialGradient(
+            listOf(Color.Black.copy(alpha = 0.35f), Color.Transparent),
+            Offset(w * 0.74f, h * 0.66f), w * 0.36f
+        )
+    )
+    drawRect(
+        Brush.verticalGradient(listOf(fade.copy(alpha = 0f), fade.copy(alpha = 0.85f)), h * 0.55f, h),
+        topLeft = Offset(0f, h * 0.55f),
+        size = Size(w, h * 0.45f)
+    )
 }
 
 /** Szám beírása a kijelzőre bökve. */
@@ -1079,35 +1440,7 @@ fun OvenScreen(store: Store) {
             return@Column
         }
 
-        // ---------------- fejléc: kapcsolat és ajtó
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                if (LocalOven.connected) "Sütő csatlakoztatva" else LocalOven.status,
-                fontSize = 13.sp,
-                color = if (LocalOven.connected) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f)
-            )
-            if (LocalOven.connected) {
-                Text(
-                    if (LocalOven.doorOpen()) "ajtó nyitva" else "ajtó csukva",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                TextButton(
-                    onClick = { LocalOven.connect(store) },
-                    enabled = !LocalOven.busy
-                ) { Text(if (LocalOven.busy) "Kapcsolódás…" else "Kapcsolódás") }
-            }
-        }
-
-        LocalOven.lastError?.takeIf { !LocalOven.connected }?.let {
-            Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
-        }
-
-        // ---------------- kör alakú kijelző
+        // ---------------- fejléc: a sütőtér képe, rajta a kijelző és az állapot
 
         val current = LocalOven.currentTemp()
         val valueColor = if (isGrill) {
@@ -1123,91 +1456,135 @@ fun OvenScreen(store: Store) {
         val currentFraction = if (isGrill || current == null) 0f else
             ((current - range.first).toFloat() / (range.last - range.first)).coerceIn(0f, 1f)
 
-        TempGauge(targetFraction, currentFraction, valueColor) {
-            if (LocalOven.connected && current != null) {
-                Text("$current °C", fontSize = 44.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    "a sütőtérben",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                Text("– °C", fontSize = 44.sp, fontWeight = FontWeight.Bold)
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                if (isGrill) "cél: ${levelN}. grillfokozat" else "cél: $tempC °C",
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = valueColor
-            )
-            Text(
-                OvenPrograms.nameOf(modeUid),
-                fontSize = 13.sp,
-                color = if (modeDirty) PendingColor else MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-        }
-
-        // ---------------- állapot és előrehaladás
-
         // a tick olvasása kell, hogy másodpercenként újrarajzolódjon
         val remSec = if (tick >= 0L) LocalOven.remainingSec() else null
         val totalSec = LocalOven.totalSec()
 
-        Text(
-            when {
-                !LocalOven.connected -> "Nincs kapcsolat"
-                LocalOven.running() -> "Sütés folyamatban"
-                LocalOven.paused() -> "Szüneteltetve"
-                else -> LocalOven.operationText().replaceFirstChar { it.uppercase() }
-            },
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold
-        )
+        // A sütőtér fénye a tényleges hőfokkal nő; kikapcsolt, hűlő sütőnél csak halvány.
+        val active = LocalOven.running() || LocalOven.paused()
+        val tempHeat = if (LocalOven.connected && current != null) {
+            ((current - 40) / 200f).coerceIn(0f, 1f)
+        } else 0f
+        val heat = if (active) maxOf(0.35f, tempHeat) else tempHeat * 0.5f
+        val lampOn = LocalOven.connected && (LocalOven.lightOn() || active)
 
-        if (remSec != null) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        LocalOven.formatClock(remSec),
-                        fontSize = 34.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = SyncedColor
-                    )
-                    Text(
-                        "  hátralévő idő",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                LocalOven.progress()?.let { p ->
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(8.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                    ) {
-                        if (p > 0f) {
-                            Box(
-                                Modifier
-                                    .fillMaxWidth(p)
-                                    .fillMaxHeight()
-                                    .background(SyncedColor)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(300.dp)
+                .clip(RoundedCornerShape(20.dp))
+        ) {
+            OvenBackdrop(
+                heat = heat,
+                lampOn = lampOn,
+                fade = MaterialTheme.colorScheme.background,
+                modifier = Modifier.matchParentSize()
+            )
+            Column(
+                Modifier
+                    .matchParentSize()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        HeroText("Sütő", 22.sp, FontWeight.Bold)
+                        HeroText("Bosch HBG7341B1", 12.sp, color = HeroMuted)
+                    }
+                    if (LocalOven.connected) {
+                        Column(horizontalAlignment = Alignment.End) {
+                            HeroText("csatlakoztatva", 12.sp, color = HeroMuted)
+                            HeroText(
+                                if (LocalOven.doorOpen()) "ajtó nyitva" else "ajtó csukva",
+                                12.sp,
+                                color = HeroMuted
                             )
+                        }
+                    } else {
+                        TextButton(
+                            onClick = { LocalOven.connect(store) },
+                            enabled = !LocalOven.busy
+                        ) { Text(if (LocalOven.busy) "Kapcsolódás…" else "Kapcsolódás") }
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TempGauge(targetFraction, currentFraction, valueColor, size = 164.dp) {
+                        HeroText("aktuális", 11.sp, color = HeroMuted)
+                        HeroText(
+                            if (LocalOven.connected && current != null) "$current °C" else "– °C",
+                            32.sp,
+                            FontWeight.Bold
+                        )
+                        HeroText(
+                            if (isGrill) "cél: ${levelN}. fokozat" else "cél: $tempC °C",
+                            14.sp,
+                            FontWeight.SemiBold,
+                            color = valueColor
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(
+                        Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        HeroText(
+                            when {
+                                !LocalOven.connected -> "Nincs kapcsolat"
+                                LocalOven.running() -> "Sütés folyamatban"
+                                LocalOven.paused() -> "Szüneteltetve"
+                                else -> LocalOven.operationText().replaceFirstChar { it.uppercase() }
+                            },
+                            16.sp,
+                            FontWeight.Bold
+                        )
+                        HeroText(
+                            OvenPrograms.nameOf(modeUid),
+                            13.sp,
+                            color = if (modeDirty) PendingColor else HeroMuted
+                        )
+                        if (remSec != null) {
+                            Spacer(Modifier.height(6.dp))
+                            HeroText("hátralévő idő", 11.sp, color = HeroMuted)
+                            Row(verticalAlignment = Alignment.Bottom) {
+                                HeroText(LocalOven.formatClock(remSec), 28.sp, FontWeight.Bold)
+                                if (totalSec != null) {
+                                    HeroText(" / ${LocalOven.formatClock(totalSec)}", 13.sp, color = HeroMuted)
+                                }
+                            }
+                            LocalOven.progress()?.let { p ->
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp))
+                                        .background(Color.White.copy(alpha = 0.18f))
+                                ) {
+                                    if (p > 0f) {
+                                        Box(
+                                            Modifier
+                                                .fillMaxWidth(p)
+                                                .fillMaxHeight()
+                                                .background(SyncedColor)
+                                        )
+                                    }
+                                }
+                            }
+                            if (totalSec != null) {
+                                HeroText(
+                                    "eltelt ${LocalOven.formatClock((totalSec - remSec).coerceAtLeast(0))}",
+                                    11.sp,
+                                    color = HeroMuted
+                                )
+                            }
                         }
                     }
                 }
-                if (totalSec != null) {
-                    Text(
-                        "eltelt ${LocalOven.formatClock((totalSec - remSec).coerceAtLeast(0))}" +
-                            "   ·   összesen ${LocalOven.formatClock(totalSec)}",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
             }
+        }
+
+        LocalOven.lastError?.takeIf { !LocalOven.connected }?.let {
+            Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
         }
 
         // ---------------- fűtési mód

@@ -113,7 +113,8 @@ data class SavedPlan(
     val inputSummary: String,
     val plan: Plan,
     val notes: List<String>,
-    val photoPath: String?
+    /** A kész étel fényképei, a legrégebbi elöl. */
+    val photos: List<String>
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -121,7 +122,7 @@ data class SavedPlan(
         put("inputSummary", inputSummary)
         put("plan", plan.toJson())
         put("notes", JSONArray(notes))
-        put("photoPath", photoPath ?: "")
+        put("photos", JSONArray(photos))
     }
 
     companion object {
@@ -130,14 +131,19 @@ data class SavedPlan(
             o.optJSONArray("notes")?.let { arr ->
                 for (i in 0 until arr.length()) notes.add(arr.optString(i))
             }
-            val photo = o.optString("photoPath", "")
+            val photos = mutableListOf<String>()
+            o.optJSONArray("photos")?.let { arr ->
+                for (i in 0 until arr.length()) arr.optString(i).takeIf { it.isNotBlank() }?.let(photos::add)
+            }
+            // Régebbi mentések egyetlen képpel
+            if (photos.isEmpty()) o.optString("photoPath", "").takeIf { it.isNotBlank() }?.let(photos::add)
             return SavedPlan(
                 id = o.optLong("id", System.currentTimeMillis()),
                 createdAt = o.optLong("createdAt", System.currentTimeMillis()),
                 inputSummary = o.optString("inputSummary"),
                 plan = Plan.from(o.optJSONObject("plan") ?: JSONObject()),
                 notes = notes,
-                photoPath = photo.ifBlank { null }
+                photos = photos
             )
         }
     }
