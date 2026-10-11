@@ -37,6 +37,28 @@ class Store(context: Context) {
         Provider.CLAUDE -> AiConfig(Provider.CLAUDE, claudeKey, claudeModel)
     }
 
+    // ------------------------------------------------------------ sütő a helyi hálózaton
+
+    var ovenIp: String
+        get() = prefs.getString("ovenIp", "") ?: ""
+        set(v) = prefs.edit().putString("ovenIp", v).apply()
+
+    var ovenPsk: String
+        get() = prefs.getString("ovenPsk", "") ?: ""
+        set(v) = prefs.edit().putString("ovenPsk", v).apply()
+
+    /** A sütő eszközlistájában ezen a néven jelenik meg az app; telepítésenként állandó. */
+    val ovenDeviceId: String
+        get() {
+            prefs.getString("ovenDeviceId", null)?.let { return it }
+            val id = java.util.Random().nextInt().toLong().and(0xFFFFFFFFL).toString(16).padStart(8, '0')
+            prefs.edit().putString("ovenDeviceId", id).apply()
+            return id
+        }
+
+    val ovenConfigured: Boolean
+        get() = ovenIp.isNotBlank() && ovenPsk.isNotBlank()
+
     // ------------------------------------------------------------ űrlap és utolsó terv
     // Minden a telefon tárhelyére kerül, hogy az app kilövése után is megmaradjon.
 

@@ -55,6 +55,11 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // A BouncyCastle jar-ok többszörös Java-verziós bejegyzéseket hoznak magukkal.
+        resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        resources.excludes += "META-INF/*.SF"
+        resources.excludes += "META-INF/*.DSA"
+        resources.excludes += "META-INF/*.RSA"
     }
 }
 
@@ -68,5 +73,11 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    // A sütő helyi websocketjét TLS-PSK védi (ECDHE-PSK-CHACHA20-POLY1305),
+    // amit az Android beépített TLS-e nem ismer – ezt a BouncyCastle tudja.
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    implementation("org.bouncycastle:bcutil-jdk18on:1.78.1")
+    implementation("org.bouncycastle:bctls-jdk18on:1.78.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

@@ -31,8 +31,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -105,6 +107,9 @@ fun App() {
 
     LaunchedEffect(Unit) {
         TimerStore.load(context)
+        // Ha a sütő be van állítva, induláskor magától kapcsolódik, így a
+        // tervező tetején azonnal látszik a hőfok és az állapot.
+        if (store.ovenConfigured) LocalOven.connect(store)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -156,6 +161,14 @@ fun PlannerScreen(store: Store, st: PlannerState) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text("Sütési terv", fontWeight = FontWeight.Bold, fontSize = 22.sp)
+
+        if (LocalOven.connected) {
+            Text(
+                "🔌 Sütő: ${LocalOven.summary()}",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
 
         ExposedDropdownMenuBox(
             expanded = foodMenu,
@@ -395,6 +408,9 @@ fun PlanView(plan: Plan) {
 fun PhaseCard(timerKey: String, index: Int, phase: Phase) {
     val context = LocalContext.current
     val appCtx = remember { context.applicationContext }
+    val store = remember { Store(appCtx) }
+    val scope = rememberCoroutineScope()
+    var sendMsg by remember { mutableStateOf<String?>(null) }
     val endAt = TimerStore.endAt[timerKey]
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
@@ -466,6 +482,25 @@ fun PhaseCard(timerKey: String, index: Int, phase: Phase) {
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.primary
                 )
+            }
+
+            if (store.ovenConfigured) {
+                OutlinedButton(
+                    onClick = {
+                        sendMsg = "Küldés…"
+                        scope.launch {
+                            val r = withContext(Dispatchers.IO) { LocalOven.sendPhase(store, phase) }
+                            sendMsg = r.fold({ it }, { it.message ?: "Nem sikerült." })
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                ) { Text("Küldés a sütőnek") }
+
+                sendMsg?.let {
+                    Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                }
             }
         }
     }
@@ -648,6 +683,10 @@ fun SettingsScreen(store: Store) {
     var claudeModel by remember { mutableStateOf(store.claudeModel) }
     var saved by remember { mutableStateOf(false) }
 
+    var ovenIp by remember { mutableStateOf(store.ovenIp) }
+    var ovenPsk by remember { mutableStateOf(store.ovenPsk) }
+    var ovenMsg by remember { mutableStateOf<String?>(null) }
+
     var checking by remember { mutableStateOf(false) }
     var updateMsg by remember { mutableStateOf<String?>(null) }
     var updateUrl by remember { mutableStateOf<String?>(null) }
@@ -732,6 +771,121 @@ fun SettingsScreen(store: Store) {
 
         Button(onClick = { persist() }, modifier = Modifier.fillMaxWidth()) { Text("Mentés") }
         if (saved) Text("Elmentve.", color = MaterialTheme.colorScheme.primary)
+
+        HorizontalDivider()
+
+        Text("Sütő a helyi hálózaton", fontWeight = FontWeight.SemiBold)
+        Text(
+            "Az app közvetlenül a sütővel beszél a wifin, felhő nélkül. " +
+                "A telefonnak ugyanazon a hálózaton kell lennie.",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        OutlinedTextField(
+            value = ovenIp,
+            onValueChange = { ovenIp = it; store.ovenIp = it.trim() },
+            label = { Text("A sütő IP-címe") },
+            placeholder = { Text("192.168.1.100") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+            value = ovenPsk,
+            onValueChange = {
+                val cleaned = LocalOven.cleanPsk(it)
+                ovenPsk = cleaned
+                store.ovenPsk = cleaned
+            },
+            label = { Text("A sütő kulcsa (PSK)") },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Card {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    if (LocalOven.connected) "Kapcsolódva · ${LocalOven.summary()}"
+                    else LocalOven.status,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp
+                )
+                if (LocalOven.connected) {
+                    Text(
+                        "Távoli indítás: " +
+                            if (LocalOven.remoteStartAllowed()) "engedélyezve" else "NINCS engedélyezve",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                LocalOven.lastError?.let {
+                    Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    ovenMsg = null
+                    if (LocalOven.connected) LocalOven.disconnect() else LocalOven.connect(store)
+                },
+                enabled = !LocalOven.busy,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    when {
+                        LocalOven.busy -> "Kapcsolódás…"
+                        LocalOven.connected -> "Bontás"
+                        else -> "Kapcsolódás"
+                    }
+                )
+            }
+            OutlinedButton(
+                onClick = {
+                    ovenMsg = "Küldés…"
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) { LocalOven.enableRemoteStart(store) }
+                        ovenMsg = r.fold(
+                            { "$it – ha a sütő rákérdez, hagyd jóvá a kijelzőjén." },
+                            { it.message ?: "Nem sikerült." }
+                        )
+                    }
+                },
+                enabled = store.ovenConfigured,
+                modifier = Modifier.weight(1.4f)
+            ) { Text("Távoli indítás be") }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    ovenMsg = "Küldés…"
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) { LocalOven.switchOn(store) }
+                        ovenMsg = r.fold({ it }, { it.message ?: "Nem sikerült." })
+                    }
+                },
+                enabled = store.ovenConfigured,
+                modifier = Modifier.weight(1f)
+            ) { Text("Bekapcsolás") }
+
+            OutlinedButton(
+                onClick = {
+                    ovenMsg = "Küldés…"
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) { LocalOven.abort(store) }
+                        ovenMsg = r.fold({ it }, { it.message ?: "Nem sikerült." })
+                    }
+                },
+                enabled = store.ovenConfigured,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                ),
+                modifier = Modifier.weight(1f)
+            ) { Text("Leállítás") }
+        }
+
+        ovenMsg?.let { Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
 
         HorizontalDivider()
 

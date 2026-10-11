@@ -32,6 +32,25 @@ GitHub → **Actions** → a legutolsó futás → **Artifacts** → `sutoseged-
 
 Az APK aláíratlan debug build, ezért a telepítéshez engedélyezni kell az ismeretlen forrást.
 
+## A sütő vezérlése (helyi hálózaton, felhő nélkül)
+
+Az app közvetlenül a sütővel beszél a wifin, a Home Connect felhő és fejlesztői fiók
+megkerülésével. A sütő a 443-as porton egy websocketet szolgál ki, amit TLS-PSK véd
+(`ECDHE-PSK-CHACHA20-POLY1305`, TLS 1.2, identity `HCCOM_Local_App`). Ezt az Android
+beépített TLS-e nem ismeri, ezért a kézfogást a BouncyCastle alacsonyszintű TLS rétege
+végzi, a websocketet pedig a `OvenLocal.kt` írja kézzel a titkosított adatfolyam fölé.
+
+A kulcs a [hcpy](https://github.com/hcpy2-0/hcpy) `hc-login.py` scriptjével szerezhető meg
+a rendes Home Connect fiókkal; a `key` mező kerül a Beállítások közé az IP-cím mellé.
+
+A munkamenet menete: a sütő küld egy `/ei/initialValues` POST-ot (ebből jön a munkamenet
+azonosítója és az üzenetszámláló kezdete), erre válaszolunk, majd `/ci/services`,
+`/ei/deviceReady` és `/ro/allMandatoryValues` következik. Innentől `/ro/values` POST ír
+beállítást (539 = ki/be, 15 = távoli indítás, 512 = leállítás), `/ro/activeProgram` POST
+pedig programot indít (5120 = hőfok, 548 = időtartam, 5122 = grillfokozat).
+
+A felhős API-val szemben a helyi út az **Air Fry** módot is ismeri.
+
 ## Állapot
 
 Első verzió: fázistervező. Később tervezett:
