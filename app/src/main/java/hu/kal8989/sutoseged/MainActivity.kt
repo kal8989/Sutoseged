@@ -11,8 +11,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,8 +25,16 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -128,7 +140,7 @@ fun App() {
                 )
                 NavigationBarItem(
                     selected = tab == 2, onClick = { tab = 2 },
-                    label = { Text("Sütő") }, icon = { Text("🎛️", fontSize = 18.sp) }
+                    label = { Text("Sütő") }, icon = { OvenTabIcon() }
                 )
                 NavigationBarItem(
                     selected = tab == 3, onClick = { tab = 3 },
@@ -355,14 +367,15 @@ fun PlanView(plan: Plan) {
             Card {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Hozzávalók", fontWeight = FontWeight.SemiBold)
+                    // Külön sorban a név és a mennyiség: a hosszú mennyiségek
+                    // ("kb. 15 karika, 1 cm vastag") egy oszlopban szétnyomnák a nevet.
                     plan.hozzavalok.forEach { ing ->
-                        Row(Modifier.fillMaxWidth()) {
-                            Text(ing.nev, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Column(Modifier.padding(top = 4.dp)) {
+                            Text(ing.nev, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                             Text(
                                 ing.mennyiseg,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(start = 12.dp)
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -676,43 +689,321 @@ fun SavedScreen(store: Store) {
 
 // ---------------------------------------------------------------- Sütő vezérlése
 
-@OptIn(ExperimentalMaterial3Api::class)
+// Piros: pontosan ez van most a sütőn. Sárga: átírtad, de még nincs kiküldve.
+private val SyncedColor = Color(0xFFE2563C)
+private val PendingColor = Color(0xFFE9B429)
+
+/** A fülsáv ikonja: sütő ajtóval és kezelőpanellel, nem főzőlap. */
+@Composable
+fun OvenTabIcon() {
+    val tint = LocalContentColor.current
+    Canvas(Modifier.size(22.dp)) {
+        val w = size.width
+        val h = size.height
+        drawRoundRect(
+            color = tint,
+            topLeft = Offset(w * 0.10f, h * 0.08f),
+            size = Size(w * 0.80f, h * 0.84f),
+            cornerRadius = CornerRadius(w * 0.10f),
+            style = Stroke(width = w * 0.09f)
+        )
+        // kezelőpanel elválasztó vonala
+        drawLine(
+            color = tint,
+            start = Offset(w * 0.10f, h * 0.31f),
+            end = Offset(w * 0.90f, h * 0.31f),
+            strokeWidth = w * 0.07f
+        )
+        // két gomb a panelen
+        drawCircle(color = tint, radius = w * 0.05f, center = Offset(w * 0.27f, h * 0.19f))
+        drawCircle(color = tint, radius = w * 0.05f, center = Offset(w * 0.45f, h * 0.19f))
+        // ajtóüveg
+        drawRoundRect(
+            color = tint,
+            topLeft = Offset(w * 0.23f, h * 0.44f),
+            size = Size(w * 0.54f, h * 0.36f),
+            cornerRadius = CornerRadius(w * 0.06f),
+            style = Stroke(width = w * 0.07f)
+        )
+    }
+}
+
+/**
+ * A kör alakú kijelző. A külső ív a beállított érték (piros vagy sárga),
+ * a belső vékony ív a sütőtér tényleges hőmérséklete.
+ */
+@Composable
+private fun TempGauge(
+    targetFraction: Float,
+    currentFraction: Float,
+    valueColor: Color,
+    content: @Composable () -> Unit
+) {
+    val track = MaterialTheme.colorScheme.surfaceVariant
+    val live = MaterialTheme.colorScheme.primary
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(220.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(Modifier.size(220.dp)) {
+            val stroke = size.minDimension * 0.075f
+            val inset = stroke * 0.7f
+            val tl = Offset(inset, inset)
+            val arcSize = Size(size.width - inset * 2, size.height - inset * 2)
+            drawArc(
+                color = track,
+                startAngle = 135f, sweepAngle = 270f, useCenter = false,
+                topLeft = tl, size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round)
+            )
+            if (targetFraction > 0f) {
+                drawArc(
+                    color = valueColor,
+                    startAngle = 135f, sweepAngle = 270f * targetFraction, useCenter = false,
+                    topLeft = tl, size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round)
+                )
+            }
+            if (currentFraction > 0f) {
+                val inner = inset + stroke * 1.5f
+                drawArc(
+                    color = live,
+                    startAngle = 135f, sweepAngle = 270f * currentFraction, useCenter = false,
+                    topLeft = Offset(inner, inner),
+                    size = Size(size.width - inner * 2, size.height - inner * 2),
+                    style = Stroke(width = stroke * 0.4f, cap = StrokeCap.Round)
+                )
+            }
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) { content() }
+    }
+}
+
+/** Szám beírása a kijelzőre bökve. */
+@Composable
+private fun NumberDialog(
+    title: String,
+    initial: Int,
+    range: IntRange,
+    unit: String,
+    onDismiss: () -> Unit,
+    onOk: (Int) -> Unit
+) {
+    var text by remember { mutableStateOf(initial.toString()) }
+    val n = text.toIntOrNull()
+    val valid = n != null && n >= range.first && n <= range.last
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { v -> text = v.filter { it.isDigit() }.take(4) },
+                    label = { Text(unit) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+                Text(
+                    "${range.first}–${range.last} $unit",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { n?.let(onOk) }, enabled = valid) { Text("Kész") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Mégsem") } }
+    )
+}
+
+/** Egy beállítókártya: −, a számra bökve beírható érték, +, csúszka, Beállít. */
+@Composable
+private fun ValueCard(
+    title: String,
+    value: Int,
+    unit: String,
+    actual: String?,
+    color: Color,
+    sliderRange: ClosedFloatingPointRange<Float>,
+    sliderSteps: Int,
+    enabled: Boolean,
+    message: String?,
+    hint: String,
+    onMinus: () -> Unit,
+    onPlus: () -> Unit,
+    onSlider: (Int) -> Unit,
+    onTap: () -> Unit,
+    onApply: () -> Unit
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                actual?.let {
+                    Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                FilledTonalButton(
+                    onClick = onMinus,
+                    modifier = Modifier.size(52.dp),
+                    contentPadding = PaddingValues(0.dp)
+                ) { Text("−", fontSize = 24.sp) }
+
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clickable { onTap() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "$value $unit",
+                        fontSize = 30.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = color,
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                FilledTonalButton(
+                    onClick = onPlus,
+                    modifier = Modifier.size(52.dp),
+                    contentPadding = PaddingValues(0.dp)
+                ) { Text("+", fontSize = 24.sp) }
+            }
+
+            Slider(
+                value = value.toFloat().coerceIn(sliderRange.start, sliderRange.endInclusive),
+                onValueChange = { onSlider(it.toInt()) },
+                valueRange = sliderRange,
+                steps = sliderSteps
+            )
+
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    message ?: hint,
+                    fontSize = 12.sp,
+                    color = if (message != null) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(onClick = onApply, enabled = enabled) { Text("Beállít") }
+            }
+        }
+    }
+}
+
 @Composable
 fun OvenScreen(store: Store) {
     val scope = rememberCoroutineScope()
 
-    var modeName by remember { mutableStateOf(store.getForm("mMode", "Felső/alsó sütés")) }
-    var modeMenu by remember { mutableStateOf(false) }
-    var temp by remember { mutableStateOf(store.getForm("mTemp", "180")) }
-    var mins by remember { mutableStateOf(store.getForm("mMin", "20")) }
-    var level by remember { mutableStateOf(store.getForm("mLevel", "2")) }
+    var modeUid by remember {
+        mutableIntStateOf(store.getForm("mModeUid", "8209").toIntOrNull() ?: 8209)
+    }
+    var tempC by remember { mutableIntStateOf(store.getForm("mTemp", "180").toIntOrNull() ?: 180) }
+    var durMin by remember { mutableIntStateOf(store.getForm("mMin", "20").toIntOrNull() ?: 20) }
+    var levelN by remember { mutableIntStateOf(store.getForm("mLevel", "2").toIntOrNull() ?: 2) }
     var alarm by remember { mutableStateOf(store.getForm("mAlarm", "10")) }
+
+    // Sárga, amíg a helyben átírt érték nincs kiküldve; utána ismét piros.
+    var modeDirty by remember { mutableStateOf(false) }
+    var tempDirty by remember { mutableStateOf(false) }
+    var timeDirty by remember { mutableStateOf(false) }
+
     var fast by remember { mutableStateOf(false) }
     var blinkEnd by remember { mutableStateOf(store.blinkAtEnd) }
+    var working by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf<String?>(null) }
     var tempMsg by remember { mutableStateOf<String?>(null) }
     var timeMsg by remember { mutableStateOf<String?>(null) }
     var alarmMsg by remember { mutableStateOf<String?>(null) }
-    var working by remember { mutableStateOf(false) }
+    var allModes by remember { mutableStateOf(false) }
+    var editTemp by remember { mutableStateOf(false) }
+    var editTime by remember { mutableStateOf(false) }
 
-    val modeUid = OvenPrograms.manualModes.firstOrNull { it.first == modeName }?.second ?: 8209
     val isGrill = OvenPrograms.isGrill(modeUid)
     val range = OvenPrograms.tempRange(modeUid)
 
-    /** A visszajelzés ott jelenik meg, ahol a gombot megnyomtad, nem a lap alján. */
-    fun send(set: (String?) -> Unit, block: () -> Result<String>) {
+    // A lap megnyitásakor magától kapcsolódik, és behúzza a sütő aktuális beállításait.
+    LaunchedEffect(Unit) {
+        if (store.ovenConfigured && !LocalOven.connected) LocalOven.connect(store)
+    }
+
+    // Másodpercenkénti ütés: a hátralévő idő a két sütőjelentés között is fogy.
+    var tick by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            tick++
+        }
+    }
+
+    // A sütő értékei töltik a mezőket, amíg nem írod át őket.
+    val ovenProgram = LocalOven.activeProgram()
+    val ovenTemp = LocalOven.setpoint()
+    val ovenDur = LocalOven.totalSec()
+
+    LaunchedEffect(ovenProgram, modeDirty) {
+        if (!modeDirty && ovenProgram != null &&
+            OvenPrograms.manualModes.any { it.second == ovenProgram }
+        ) {
+            modeUid = ovenProgram
+            store.putForm("mModeUid", ovenProgram.toString())
+        }
+    }
+    LaunchedEffect(ovenTemp, tempDirty) {
+        if (!tempDirty && ovenTemp != null && ovenTemp > 0) {
+            tempC = ovenTemp
+            store.putForm("mTemp", ovenTemp.toString())
+        }
+    }
+    LaunchedEffect(ovenDur, timeDirty) {
+        if (!timeDirty && ovenDur != null && ovenDur > 0) {
+            durMin = ovenDur / 60
+            store.putForm("mMin", (ovenDur / 60).toString())
+        }
+    }
+    // Módváltáskor a hőfok beugrik az új mód tartományába.
+    LaunchedEffect(modeUid) {
+        val fixed = tempC.coerceIn(range.first, range.last)
+        if (fixed != tempC) {
+            tempC = fixed
+            store.putForm("mTemp", fixed.toString())
+        }
+    }
+
+    /** Elküld egy parancsot, és a válasz ott jelenik meg, ahol megnyomtad. */
+    fun send(set: (String?) -> Unit, clear: (() -> Unit)? = null, block: () -> Result<String>) {
         working = true
         set("Küldés…")
         scope.launch {
             val r = withContext(Dispatchers.IO) { block() }
             working = false
             set(r.fold({ "✓ $it" }, { it.message ?: "Nem sikerült." }))
+            if (r.isSuccess && clear != null) {
+                // A sütő egy pillanattal később jelenti vissza az új értéket.
+                delay(1200)
+                clear()
+            }
         }
     }
 
-    fun cmd(block: () -> Result<String>) = send({ msg = it }, block)
+    fun cmd(block: () -> Result<String>) = send({ msg = it }, null, block)
 
-    // A nyugtázás pár másodperc után magától eltűnik.
     LaunchedEffect(tempMsg) {
         if (tempMsg?.startsWith("✓") == true) { delay(5000); tempMsg = null }
     }
@@ -721,6 +1012,9 @@ fun OvenScreen(store: Store) {
     }
     LaunchedEffect(alarmMsg) {
         if (alarmMsg?.startsWith("✓") == true) { delay(5000); alarmMsg = null }
+    }
+    LaunchedEffect(msg) {
+        if (msg?.startsWith("✓") == true) { delay(6000); msg = null }
     }
 
     Column(
@@ -731,9 +1025,8 @@ fun OvenScreen(store: Store) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("Sütő vezérlése", fontWeight = FontWeight.Bold, fontSize = 22.sp)
-
         if (!store.ovenConfigured) {
+            Text("Sütő vezérlése", fontWeight = FontWeight.Bold, fontSize = 22.sp)
             Text(
                 "Előbb add meg a sütő IP-címét és kulcsát a Beállítás fülön.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -741,200 +1034,392 @@ fun OvenScreen(store: Store) {
             return@Column
         }
 
-        // ---------------- állapot
+        // ---------------- fejléc: kapcsolat és ajtó
 
-        Card {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                if (LocalOven.connected) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (LocalOven.connected) "Sütő csatlakoztatva" else LocalOven.status,
+                fontSize = 13.sp,
+                color = if (LocalOven.connected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            if (LocalOven.connected) {
+                Text(
+                    if (LocalOven.doorOpen()) "ajtó nyitva" else "ajtó csukva",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                TextButton(
+                    onClick = { LocalOven.connect(store) },
+                    enabled = !LocalOven.busy
+                ) { Text(if (LocalOven.busy) "Kapcsolódás…" else "Kapcsolódás") }
+            }
+        }
+
+        LocalOven.lastError?.takeIf { !LocalOven.connected }?.let {
+            Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+        }
+
+        // ---------------- kör alakú kijelző
+
+        val current = LocalOven.currentTemp()
+        val valueColor = if (isGrill) {
+            if (modeDirty) PendingColor else SyncedColor
+        } else {
+            if (tempDirty) PendingColor else SyncedColor
+        }
+        val targetFraction = if (isGrill) {
+            levelN.coerceIn(1, 3) / 3f
+        } else {
+            ((tempC - range.first).toFloat() / (range.last - range.first)).coerceIn(0f, 1f)
+        }
+        val currentFraction = if (isGrill || current == null) 0f else
+            ((current - range.first).toFloat() / (range.last - range.first)).coerceIn(0f, 1f)
+
+        TempGauge(targetFraction, currentFraction, valueColor) {
+            if (LocalOven.connected && current != null) {
+                Text("$current °C", fontSize = 44.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "a sütőtérben",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text("– °C", fontSize = 44.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                if (isGrill) "cél: ${levelN}. grillfokozat" else "cél: $tempC °C",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = valueColor
+            )
+            Text(
+                OvenPrograms.nameOf(modeUid),
+                fontSize = 13.sp,
+                color = if (modeDirty) PendingColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+        }
+
+        // ---------------- állapot és előrehaladás
+
+        // a tick olvasása kell, hogy másodpercenként újrarajzolódjon
+        val remSec = if (tick >= 0L) LocalOven.remainingSec() else null
+        val totalSec = LocalOven.totalSec()
+
+        Text(
+            when {
+                !LocalOven.connected -> "Nincs kapcsolat"
+                LocalOven.running() -> "Sütés folyamatban"
+                LocalOven.paused() -> "Szüneteltetve"
+                else -> LocalOven.operationText().replaceFirstChar { it.uppercase() }
+            },
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        if (remSec != null) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        "${LocalOven.currentTemp() ?: "–"} °C" +
-                            (LocalOven.setpoint()?.let { "   ·   cél: $it °C" } ?: ""),
+                        LocalOven.formatClock(remSec),
+                        fontSize = 34.sp,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp
+                        color = SyncedColor
                     )
                     Text(
-                        LocalOven.operationText() +
-                            (LocalOven.activeProgram()?.let { " · ${OvenPrograms.nameOf(it)}" } ?: ""),
-                        fontSize = 14.sp
-                    )
-                    LocalOven.remainingMin()?.let {
-                        Text("Hátralévő idő: $it perc", fontSize = 14.sp)
-                    }
-                    Text(
-                        if (LocalOven.doorOpen()) "Az ajtó nyitva" else "Az ajtó csukva",
+                        "  hátralévő idő",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                } else {
-                    Text(LocalOven.status, fontWeight = FontWeight.SemiBold)
-                    LocalOven.lastError?.let {
-                        Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.error)
+                }
+                LocalOven.progress()?.let { p ->
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(8.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
+                        if (p > 0f) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth(p)
+                                    .fillMaxHeight()
+                                    .background(SyncedColor)
+                            )
+                        }
                     }
-                    Spacer(Modifier.height(4.dp))
-                    Button(
-                        onClick = { LocalOven.connect(store) },
-                        enabled = !LocalOven.busy,
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text(if (LocalOven.busy) "Kapcsolódás…" else "Kapcsolódás") }
+                }
+                if (totalSec != null) {
+                    Text(
+                        "eltelt ${LocalOven.formatClock((totalSec - remSec).coerceAtLeast(0))}" +
+                            "   ·   összesen ${LocalOven.formatClock(totalSec)}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
 
         // ---------------- fűtési mód
 
-        ExposedDropdownMenuBox(
-            expanded = modeMenu,
-            onExpandedChange = { modeMenu = !modeMenu }
+        Text("Fűtési mód", fontWeight = FontWeight.SemiBold)
+
+        val quick = remember {
+            listOf(8217, 8209, 8277, 8213, 8224, 8212, 8226, 8215)
+        }
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            OutlinedTextField(
-                value = modeName,
-                onValueChange = {},
-                readOnly = true,
-                label = { Text("Fűtési mód") },
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = modeMenu) },
-                modifier = Modifier
-                    .menuAnchor()
-                    .fillMaxWidth()
-            )
-            ExposedDropdownMenu(expanded = modeMenu, onDismissRequest = { modeMenu = false }) {
-                OvenPrograms.manualModes.forEach { (name, _) ->
-                    DropdownMenuItem(
-                        text = { Text(name) },
-                        onClick = {
-                            modeName = name
-                            store.putForm("mMode", name)
-                            modeMenu = false
+            quick.forEach { uid ->
+                val selected = uid == modeUid
+                val border = when {
+                    !selected -> MaterialTheme.colorScheme.outlineVariant
+                    modeDirty -> PendingColor
+                    else -> SyncedColor
+                }
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (selected) MaterialTheme.colorScheme.surfaceVariant
+                        else MaterialTheme.colorScheme.surface
+                    ),
+                    border = BorderStroke(if (selected) 2.dp else 1.dp, border),
+                    modifier = Modifier
+                        .width(128.dp)
+                        .clickable {
+                            modeUid = uid
+                            modeDirty = true
+                            store.putForm("mModeUid", uid.toString())
                         }
+                ) {
+                    Text(
+                        OvenPrograms.nameOf(uid),
+                        Modifier.padding(10.dp),
+                        fontSize = 13.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                     )
                 }
             }
+            OutlinedButton(onClick = { allModes = true }) { Text("Összes mód") }
+        }
+
+        if (allModes) {
+            AlertDialog(
+                onDismissRequest = { allModes = false },
+                title = { Text("Fűtési mód") },
+                text = {
+                    Column(
+                        Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        OvenPrograms.manualModes.forEach { (name, uid) ->
+                            TextButton(
+                                onClick = {
+                                    modeUid = uid
+                                    modeDirty = true
+                                    store.putForm("mModeUid", uid.toString())
+                                    allModes = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    name,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = if (uid == modeUid) SyncedColor
+                                    else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { allModes = false }) { Text("Mégsem") }
+                }
+            )
         }
 
         // ---------------- hőfok vagy grillfokozat
 
         if (isGrill) {
-            Text("Grillfokozat", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("1", "2", "3").forEach { n ->
-                    FilterChip(
-                        selected = level == n,
-                        onClick = { level = n; store.putForm("mLevel", n) },
-                        label = { Text("$n. fokozat") }
-                    )
+            Card(Modifier.fillMaxWidth()) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("Grillfokozat", fontWeight = FontWeight.SemiBold)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(1, 2, 3).forEach { n ->
+                            FilterChip(
+                                selected = levelN == n,
+                                onClick = {
+                                    levelN = n
+                                    store.putForm("mLevel", n.toString())
+                                },
+                                label = { Text("$n.") }
+                            )
+                        }
+                        Spacer(Modifier.weight(1f))
+                        OutlinedButton(
+                            onClick = {
+                                send({ tempMsg = it }) { LocalOven.setLevel(store, levelN) }
+                            },
+                            enabled = !working
+                        ) { Text("Beállít") }
+                    }
+                    tempMsg?.let {
+                        Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                    }
                 }
-                OutlinedButton(
-                    onClick = {
-                        send({ tempMsg = it }) { LocalOven.setLevel(store, level.toIntOrNull() ?: 2) }
-                    },
-                    enabled = !working
-                ) { Text("Beállít") }
-            }
-            tempMsg?.let {
-                Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
             }
         } else {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedTextField(
-                    value = temp,
-                    onValueChange = { v ->
-                        val d = v.filter { it.isDigit() }.take(3)
-                        temp = d
-                        store.putForm("mTemp", d)
-                    },
-                    label = { Text("Hőfok (°C)") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f)
-                )
-                OutlinedButton(
-                    onClick = {
-                        val c = temp.toIntOrNull()
-                        if (c == null || c !in range) {
-                            tempMsg = "A hőfok ${range.first} és ${range.last} °C között lehet."
-                        } else {
-                            send({ tempMsg = it }) { LocalOven.setTemp(store, c) }
+            ValueCard(
+                title = "Hőfok",
+                value = tempC,
+                unit = "°C",
+                actual = LocalOven.currentTemp()?.let { "(jelenleg $it °C)" },
+                color = if (tempDirty) PendingColor else SyncedColor,
+                sliderRange = range.first.toFloat()..range.last.toFloat(),
+                sliderSteps = ((range.last - range.first) / 5 - 1).coerceAtLeast(0),
+                enabled = !working,
+                message = tempMsg,
+                hint = "${range.first}–${range.last} °C  ·  sütés közben is átállítható",
+                onMinus = {
+                    tempC = (tempC - 5).coerceAtLeast(range.first); tempDirty = true
+                    store.putForm("mTemp", tempC.toString())
+                },
+                onPlus = {
+                    tempC = (tempC + 5).coerceAtMost(range.last); tempDirty = true
+                    store.putForm("mTemp", tempC.toString())
+                },
+                onSlider = { v ->
+                    tempC = v.coerceIn(range.first, range.last); tempDirty = true
+                    store.putForm("mTemp", tempC.toString())
+                },
+                onTap = { editTemp = true },
+                onApply = {
+                    if (tempC !in range) {
+                        tempMsg = "A hőfok ${range.first} és ${range.last} °C között lehet."
+                    } else {
+                        send({ tempMsg = it }, { tempDirty = false }) {
+                            LocalOven.setTemp(store, tempC)
                         }
-                    },
-                    enabled = !working
-                ) { Text("Beállít") }
-            }
-            Text(
-                tempMsg ?: ("Megengedett: ${range.first}–${range.last} °C" +
-                    (LocalOven.currentTemp()?.let { "   ·   jelenleg $it °C" } ?: "")),
-                fontSize = 13.sp,
-                color = if (tempMsg != null) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                }
+            )
+        }
+
+        if (editTemp) {
+            NumberDialog(
+                title = "Hőfok beírása",
+                initial = tempC,
+                range = range,
+                unit = "°C",
+                onDismiss = { editTemp = false },
+                onOk = { v ->
+                    tempC = v
+                    tempDirty = true
+                    store.putForm("mTemp", v.toString())
+                    editTemp = false
+                }
             )
         }
 
         // ---------------- idő
 
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedTextField(
-                value = mins,
-                onValueChange = { v ->
-                    val d = v.filter { it.isDigit() }.take(4)
-                    mins = d
-                    store.putForm("mMin", d)
-                },
-                label = { Text("Idő (perc)") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.weight(1f)
-            )
-            OutlinedButton(
-                onClick = {
-                    val m = mins.toIntOrNull()
-                    if (m == null || m < 1) timeMsg = "Az időt percben add meg."
-                    else send({ timeMsg = it }) { LocalOven.setDurationMin(store, m) }
-                },
-                enabled = !working
-            ) { Text("Beállít") }
-        }
-        Text(
-            timeMsg ?: (LocalOven.remainingMin()?.let { "Hátralévő: $it perc" }
-                ?: "A hőfok és az idő sütés közben is átállítható."),
-            fontSize = 13.sp,
-            color = if (timeMsg != null) MaterialTheme.colorScheme.primary
-            else MaterialTheme.colorScheme.onSurfaceVariant
+        ValueCard(
+            title = "Sütési idő",
+            value = durMin,
+            unit = "perc",
+            actual = (if (tick >= 0L) LocalOven.remainingSec() else null)
+                ?.let { "(hátra ${LocalOven.formatClock(it)})" },
+            color = if (timeDirty) PendingColor else SyncedColor,
+            sliderRange = 0f..240f,
+            sliderSteps = 47,
+            enabled = !working,
+            message = timeMsg,
+            hint = "0 = időzítés nélkül indul  ·  sütés közben is átállítható",
+            onMinus = {
+                durMin = (durMin - 1).coerceAtLeast(0); timeDirty = true
+                store.putForm("mMin", durMin.toString())
+            },
+            onPlus = {
+                durMin = (durMin + 1).coerceAtMost(1439); timeDirty = true
+                store.putForm("mMin", durMin.toString())
+            },
+            onSlider = { v ->
+                durMin = v.coerceIn(0, 240); timeDirty = true
+                store.putForm("mMin", durMin.toString())
+            },
+            onTap = { editTime = true },
+            onApply = {
+                if (durMin < 1) timeMsg = "Az időt legalább 1 percre állítsd."
+                else send({ timeMsg = it }, { timeDirty = false }) {
+                    LocalOven.setDurationMin(store, durMin)
+                }
+            }
         )
+
+        if (editTime) {
+            NumberDialog(
+                title = "Sütési idő beírása",
+                initial = durMin,
+                range = 0..1439,
+                unit = "perc",
+                onDismiss = { editTime = false },
+                onOk = { v ->
+                    durMin = v
+                    timeDirty = true
+                    store.putForm("mMin", v.toString())
+                    editTime = false
+                }
+            )
+        }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Gyors felfűtés", Modifier.weight(1f), fontSize = 15.sp)
             Switch(checked = fast, onCheckedChange = { fast = it })
         }
 
-        // ---------------- vezérlés
+        // ---------------- indítás és leállítás
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = {
-                    cmd {
-                        LocalOven.startManual(
-                            store, modeUid,
-                            temp.toIntOrNull(), level.toIntOrNull(),
-                            mins.toIntOrNull(), fast
-                        )
-                    }
-                },
-                enabled = !working,
-                modifier = Modifier.weight(1f)
-            ) { Text("Indítás") }
-
-            OutlinedButton(
-                onClick = { cmd { LocalOven.abort(store) } },
-                enabled = !working,
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error
-                ),
-                modifier = Modifier.weight(1f)
-            ) { Text("Stop") }
+        Button(
+            onClick = {
+                send({ msg = it }, {
+                    modeDirty = false
+                    tempDirty = false
+                    timeDirty = false
+                }) {
+                    LocalOven.startManual(
+                        store, modeUid,
+                        if (isGrill) null else tempC,
+                        if (isGrill) levelN else null,
+                        durMin.takeIf { it > 0 },
+                        fast
+                    )
+                }
+            },
+            enabled = !working,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp)
+        ) {
+            Text(
+                if (LocalOven.running() || LocalOven.paused()) "Indítás (felülírja a futót)"
+                else "Indítás",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold
+            )
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -948,14 +1433,25 @@ fun OvenScreen(store: Store) {
             ) { Text(if (LocalOven.paused()) "Folytatás" else "Szünet") }
 
             OutlinedButton(
-                onClick = {
-                    if (LocalOven.powerOn()) cmd { LocalOven.switchOff(store) }
-                    else cmd { LocalOven.switchOn(store) }
-                },
+                onClick = { cmd { LocalOven.abort(store) } },
                 enabled = !working,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                ),
                 modifier = Modifier.weight(1f)
-            ) { Text(if (LocalOven.powerOn()) "Kikapcsolás" else "Bekapcsolás") }
+            ) { Text("Leállítás") }
         }
+
+        OutlinedButton(
+            onClick = {
+                if (LocalOven.powerOn()) cmd { LocalOven.switchOff(store) }
+                else cmd { LocalOven.switchOn(store) }
+            },
+            enabled = !working,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text(if (LocalOven.powerOn()) "Kikapcsolás (készenlét)" else "Bekapcsolás") }
+
+        msg?.let { Text(it, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary) }
 
         HorizontalDivider()
 
@@ -976,7 +1472,7 @@ fun OvenScreen(store: Store) {
             OutlinedButton(
                 onClick = { cmd { LocalOven.blink(store, 5) } },
                 enabled = !working,
-                modifier = Modifier.weight(1.3f)
+                modifier = Modifier.weight(1.4f)
             ) { Text("Villogtatás") }
         }
 
@@ -1028,8 +1524,6 @@ fun OvenScreen(store: Store) {
             ) { Text("Indít") }
         }
         alarmMsg?.let { Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
-
-        msg?.let { Text(it, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary) }
 
         Spacer(Modifier.height(48.dp))
     }

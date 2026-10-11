@@ -448,6 +448,8 @@ object LocalOven {
     @Volatile private var active = false
     @Volatile private var failure: String? = null
     @Volatile private var finishHandled = false
+    @Volatile private var remBaseSec = -1
+    @Volatile private var remBaseAt = 0L
 
     private fun ui(block: () -> Unit) = main.post(block)
 
@@ -468,8 +470,37 @@ object LocalOven {
 
     fun currentTemp(): Int? = (values[OvenUid.ST_CURRENT_TEMP] as? Number)?.toInt()
 
-    fun remainingMin(): Int? =
-        (values[OvenUid.ST_REMAINING] as? Number)?.toInt()?.let { if (it > 0) it / 60 else null }
+    /**
+     * A sütő csak akkor küld hátralévő időt, amikor az változik, leállításkor
+     * pedig nem nullázza – ezért csak futás közben mutatjuk, és a két jelentés
+     * között itt számoljuk tovább, hogy ne ugráljon.
+     */
+    fun remainingSec(): Int? {
+        val op = (values[OvenUid.ST_OPERATION] as? Number)?.toInt()
+        if (op != 3 && op != 2) return null
+        if (remBaseSec < 0) return null
+        val passed = ((System.currentTimeMillis() - remBaseAt) / 1000).toInt()
+        return (remBaseSec - passed).coerceAtLeast(0)
+    }
+
+    fun remainingMin(): Int? = remainingSec()?.let { if (it > 0) (it + 59) / 60 else null }
+
+    /** A beállított teljes időtartam másodpercben. */
+    fun totalSec(): Int? = (values[OvenUid.OPT_DURATION] as? Number)?.toInt()?.takeIf { it > 0 }
+
+    /** 0..1 közötti előrehaladás, vagy null, ha nincs futó program. */
+    fun progress(): Float? {
+        val total = totalSec() ?: return null
+        val rem = remainingSec() ?: return null
+        return ((total - rem).toFloat() / total).coerceIn(0f, 1f)
+    }
+
+    /** 95 perc fölött óra:perc:másodperc, különben perc:másodperc. */
+    fun formatClock(sec: Int): String {
+        val s = sec.coerceAtLeast(0)
+        return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, (s % 3600) / 60, s % 60)
+        else "%d:%02d".format(s / 60, s % 60)
+    }
 
     fun remoteStartAllowed(): Boolean = values[OvenUid.ST_REMOTE_START_ALLOWED] == true
 
@@ -530,6 +561,10 @@ object LocalOven {
                 ui { status = "Munkamenet nyitása…" }
                 s.pump(
                     onValues = { map ->
+                        (map[OvenUid.ST_REMAINING] as? Number)?.toInt()?.let {
+                            remBaseSec = it
+                            remBaseAt = System.currentTimeMillis()
+                        }
                         checkFinish(store, map)
                         ui { values.putAll(map) }
                     },
@@ -699,6 +734,37 @@ object LocalOven {
         "Villogtatás kész"
     }
 
+    /**
+     * Minden indítás előtt lefut: bekapcsol, és ha fut vagy szünetel valami,
+     * azt leállítja – így az új indítás mindig felülírja, ami éppen megy.
+     */
+    private fun prepareStart(s: OvenSession) {
+        if (!powerOn()) {
+            s.send("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.POWER_STATE},\"value\":2}]")
+            Thread.sleep(1200)
+        }
+        val op = (values[OvenUid.ST_OPERATION] as? Number)?.toInt()
+        if (op == 2 || op == 3 || op == 4 || op == 5) {
+            runCatching {
+                s.send("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.ABORT_PROGRAM},\"value\":true}]")
+            }
+            // A sütő pár tized másodperc alatt ér készenlétbe; addig nem fogad új programot.
+            val until = System.currentTimeMillis() + 6_000
+            while (System.currentTimeMillis() < until) {
+                val now = (values[OvenUid.ST_OPERATION] as? Number)?.toInt()
+                if (now != 2 && now != 3 && now != 4 && now != 5 && now != 8) break
+                Thread.sleep(200)
+            }
+            remBaseSec = -1
+            finishHandled = true
+        }
+        if (!remoteStartAllowed()) {
+            throw java.io.IOException(
+                "a sütőn nincs engedélyezve a távoli indítás – nyomd meg a Beállításokban az engedélyező gombot"
+            )
+        }
+    }
+
     /** Kézi indítás a vezérlőlapról. */
     fun startManual(
         store: Store,
@@ -708,15 +774,7 @@ object LocalOven {
         minutes: Int?,
         fastPreheat: Boolean
     ): Result<String> = run(store, "Indítás") { s ->
-        if (!powerOn()) {
-            s.send("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.POWER_STATE},\"value\":2}]")
-            Thread.sleep(1200)
-        }
-        if (!remoteStartAllowed()) {
-            throw java.io.IOException(
-                "a sütőn nincs engedélyezve a távoli indítás – nyomd meg a Beállításokban az engedélyező gombot"
-            )
-        }
+        prepareStart(s)
 
         val opts = mutableListOf<String>()
         if (OvenPrograms.isGrill(programUid)) {
@@ -745,15 +803,7 @@ object LocalOven {
         val prog = OvenPrograms.uidFor(phase.futesiMod, phase.nev)
             ?: throw java.io.IOException("a \"${phase.futesiMod}\" módot nem ismerem fel")
 
-        if (!powerOn()) {
-            s.send("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.POWER_STATE},\"value\":2}]")
-            Thread.sleep(1200)
-        }
-        if (!remoteStartAllowed()) {
-            throw java.io.IOException(
-                "a sütőn nincs engedélyezve a távoli indítás – nyomd meg a Beállításokban az engedélyező gombot"
-            )
-        }
+        prepareStart(s)
 
         val opts = mutableListOf<String>()
         if (OvenPrograms.isGrill(prog)) {

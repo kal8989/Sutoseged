@@ -56,6 +56,17 @@ indítás, szünet, leállítás, készenlét. A hőfok és az idő `liveUpdate`
 is átállítható. Ugyanitt a sütőtér világítása kapcsolható és villogtatható — a villogtatás a
 program végén magától is lefut, ha kéred. Extrák: gyerekzár, konyhai időzítő.
 
+A lap megnyitása magától kapcsolódik, és a sütő saját beállításaival tölti fel a mezőket.
+A kör alakú kijelző közepén a sütőtér tényleges hőmérséklete áll, alatta a cél. A beállítók
+színe mond mindent: **piros**, ha pontosan az van benne, ami a sütőn, és **sárga**, amint
+átírod — amíg ki nem küldöd. A hőfok és az idő a −/+ gombbal, csúszkával, vagy a számra
+bökve, beírással állítható. Minden indítás előbb leállítja, ami éppen fut (`prepareStart`),
+így a terv és a vezérlőlap indítása is mindig felülírja az előzőt.
+
+A sütő a hátralévő időt (uid 544) csak változáskor küldi, és leállításkor nem nullázza —
+ezért az app csak futó program mellett mutatja, és a két jelentés között helyben számolja
+tovább, hogy a kijelzés ne ragadjon be.
+
 ## Állapot
 
 Első verzió: fázistervező. Később tervezett:
