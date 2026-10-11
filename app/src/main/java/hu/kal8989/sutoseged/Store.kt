@@ -59,6 +59,11 @@ class Store(context: Context) {
     val ovenConfigured: Boolean
         get() = ovenIp.isNotBlank() && ovenPsk.isNotBlank()
 
+    /** Villogjon-e a sütőtér világítása, amikor a program véget ér. */
+    var blinkAtEnd: Boolean
+        get() = prefs.getBoolean("blinkAtEnd", true)
+        set(v) = prefs.edit().putBoolean("blinkAtEnd", v).apply()
+
     // ------------------------------------------------------------ űrlap és utolsó terv
     // Minden a telefon tárhelyére kerül, hogy az app kilövése után is megmaradjon.
 

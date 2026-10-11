@@ -37,8 +37,21 @@ object OvenUid {
     const val POWER_STATE = 539           // 2 = On, 3 = Standby
     const val REMOTE_CONTROL_LEVEL = 15   // 0 = Monitoring, 1 = ManualRemoteStart, 2 = PermanentRemoteStart
 
-    // parancs
+    // parancsok
     const val ABORT_PROGRAM = 512
+    const val PAUSE_PROGRAM = 537
+    const val RESUME_PROGRAM = 546
+
+    // egyéb beállítások
+    const val CHILD_LOCK = 524
+    const val LIGHT_POWER = 6112          // a sütőtér világítása
+    const val CAVITY_ILLUMINATION = 4432  // 0 = On, 1 = RestrictedOn, 2 = Off
+    const val ALARM_CLOCK = 6135          // konyhai időzítő, másodperc
+    const val SIGNAL_DURATION = 4364      // 0 rövid, 1 közepes, 2 hosszú, 3 egyszeri
+
+    // események
+    const val EV_PROGRAM_FINISHED = 6120  // 1 = Present
+    const val EV_PREHEAT_FINISHED = 6123
 
     // program opciók
     const val OPT_TEMPERATURE = 5120      // 30–300 °C
@@ -89,6 +102,42 @@ object OvenPrograms {
     )
 
     const val PREHEATING = 8215
+
+    /** A kézi vezérlőlap listája: ahogy a sütő kijelzőjén is hívjuk őket. */
+    val manualModes: List<Pair<String, Int>> = listOf(
+        "3D forró levegő" to 8217,
+        "Felső/alsó sütés" to 8209,
+        "Kímélő forró levegő" to 8218,
+        "Kímélő felső/alsó fűtés" to 8211,
+        "Air Fry" to 8277,
+        "Légkeveréses grillezés" to 8212,
+        "Grill, nagy felület" to 8224,
+        "Grill, kis felület" to 8225,
+        "Pizzafokozat" to 8213,
+        "Alsó sütés" to 8227,
+        "Kímélő párolás" to 8226,
+        "Felolvasztás" to 8233,
+        "Melegen tartás" to 8229,
+        "Edény előmelegítése" to 8230,
+        "Pihentetés" to 8263,
+        "Előmelegítés" to 8215
+    )
+
+    fun nameOf(uid: Int): String =
+        manualModes.firstOrNull { it.second == uid }?.first ?: "ismeretlen program"
+
+    /** A kézikönyv szerinti hőfoktartomány módonként. */
+    fun tempRange(uid: Int): IntRange = when (uid) {
+        8218 -> 125..250          // kímélő forró levegő
+        8211 -> 150..250          // kímélő felső/alsó
+        8226 -> 70..120           // kímélő párolás
+        8233 -> 30..60            // felolvasztás
+        8229 -> 50..100           // melegen tartás
+        8230 -> 30..90            // edény előmelegítése
+        8209, 8277 -> 30..300     // felső/alsó, Air Fry
+        8212 -> 30..300           // légkeveréses grillezés
+        else -> 30..275
+    }
 
     /** A fűtési mód nevéből a programazonosító, vagy null, ha nem ismerjük fel. */
     fun uidFor(futesiMod: String, fazisNev: String = ""): Int? {
@@ -398,6 +447,7 @@ object LocalOven {
     // a kapcsolatot háttérszálról is építjük, a kijelzést pedig a fő szálon frissítjük.
     @Volatile private var active = false
     @Volatile private var failure: String? = null
+    @Volatile private var finishHandled = false
 
     private fun ui(block: () -> Unit) = main.post(block)
 
@@ -424,6 +474,21 @@ object LocalOven {
     fun remoteStartAllowed(): Boolean = values[OvenUid.ST_REMOTE_START_ALLOWED] == true
 
     fun powerOn(): Boolean = (values[OvenUid.POWER_STATE] as? Number)?.toInt() == 2
+
+    fun setpoint(): Int? = (values[OvenUid.OPT_TEMPERATURE] as? Number)?.toInt()
+
+    fun doorOpen(): Boolean = (values[OvenUid.ST_DOOR] as? Number)?.toInt() == 0
+
+    fun lightOn(): Boolean = values[OvenUid.LIGHT_POWER] == true
+
+    fun childLockOn(): Boolean = values[OvenUid.CHILD_LOCK] == true
+
+    fun running(): Boolean = (values[OvenUid.ST_OPERATION] as? Number)?.toInt() == 3
+
+    fun paused(): Boolean = (values[OvenUid.ST_OPERATION] as? Number)?.toInt() == 4
+
+    fun activeProgram(): Int? =
+        (values[OvenUid.ST_ACTIVE_PROGRAM] as? Number)?.toInt()?.takeIf { it != 0 }
 
     /** Elnézi, ha a kulcs helyett a teljes JSON-sor kerül beillesztésre. */
     fun cleanPsk(input: String): String {
@@ -464,7 +529,10 @@ object LocalOven {
                 s.open()
                 ui { status = "Munkamenet nyitása…" }
                 s.pump(
-                    onValues = { map -> ui { values.putAll(map) } },
+                    onValues = { map ->
+                        checkFinish(store, map)
+                        ui { values.putAll(map) }
+                    },
                     onReady = { ui { connected = true; busy = false; status = "Kapcsolódva" } }
                 )
                 ui { status = "A sütő lezárta a kapcsolatot" }
@@ -491,6 +559,23 @@ object LocalOven {
             busy = false
             status = "Nincs kapcsolat"
             values.clear()
+        }
+    }
+
+    /**
+     * A sütés végét két jel is mutatja: az üzemállapot "kész" lesz, vagy
+     * megjön a ProgramFinished esemény. Ha kérted, ilyenkor villog a lámpa.
+     */
+    private fun checkFinish(store: Store, map: Map<Int, Any>) {
+        val op = (map[OvenUid.ST_OPERATION] as? Number)?.toInt()
+        val ev = (map[OvenUid.EV_PROGRAM_FINISHED] as? Number)?.toInt()
+        if (op != null && op != 6) finishHandled = false
+        val finished = op == 6 || ev == 1
+        if (finished && !finishHandled) {
+            finishHandled = true
+            if (store.blinkAtEnd) {
+                thread(name = "oven-blink", isDaemon = true) { blink(store, 5) }
+            }
         }
     }
 
@@ -559,6 +644,101 @@ object LocalOven {
 
     fun abort(store: Store) =
         setValue(store, OvenUid.ABORT_PROGRAM, "true", "A program leállítva")
+
+    fun pause(store: Store) =
+        setValue(store, OvenUid.PAUSE_PROGRAM, "true", "Szüneteltetve")
+
+    fun resume(store: Store) =
+        setValue(store, OvenUid.RESUME_PROGRAM, "true", "Folytatva")
+
+    fun setTemp(store: Store, c: Int) =
+        setValue(store, OvenUid.OPT_TEMPERATURE, "$c", "Hőfok: $c °C")
+
+    fun setLevel(store: Store, n: Int) =
+        setValue(store, OvenUid.OPT_LEVEL, "$n", "Grillfokozat: $n")
+
+    fun setDurationMin(store: Store, min: Int) =
+        setValue(store, OvenUid.OPT_DURATION, "${min * 60}", "Idő: $min perc")
+
+    fun setFastPreheat(store: Store, on: Boolean) = setValue(
+        store, OvenUid.OPT_FAST_PREHEAT, if (on) "true" else "false",
+        if (on) "Gyors felfűtés bekapcsolva" else "Gyors felfűtés kikapcsolva"
+    )
+
+    fun setLight(store: Store, on: Boolean) = setValue(
+        store, OvenUid.LIGHT_POWER, if (on) "true" else "false",
+        if (on) "Világítás be" else "Világítás ki"
+    )
+
+    fun setChildLock(store: Store, on: Boolean) = setValue(
+        store, OvenUid.CHILD_LOCK, if (on) "true" else "false",
+        if (on) "Gyerekzár be" else "Gyerekzár ki"
+    )
+
+    fun setAlarmMin(store: Store, min: Int) =
+        setValue(store, OvenUid.ALARM_CLOCK, "${min * 60}", "Időzítő: $min perc")
+
+    /**
+     * A sütőtér világítását villogtatja. A sütő alapból csak sütés közben
+     * világít, ezért előbb tartós világításra kapcsoljuk, utána visszaállítjuk.
+     */
+    fun blink(store: Store, times: Int = 5): Result<String> = run(store, "Villogtatás") { s ->
+        val wasOn = lightOn()
+        runCatching {
+            s.send("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.CAVITY_ILLUMINATION},\"value\":0}]")
+        }
+        repeat(times) {
+            s.send("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.LIGHT_POWER},\"value\":true}]")
+            Thread.sleep(450)
+            s.send("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.LIGHT_POWER},\"value\":false}]")
+            Thread.sleep(450)
+        }
+        if (wasOn) {
+            s.send("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.LIGHT_POWER},\"value\":true}]")
+        }
+        "Villogtatás kész"
+    }
+
+    /** Kézi indítás a vezérlőlapról. */
+    fun startManual(
+        store: Store,
+        programUid: Int,
+        temp: Int?,
+        level: Int?,
+        minutes: Int?,
+        fastPreheat: Boolean
+    ): Result<String> = run(store, "Indítás") { s ->
+        if (!powerOn()) {
+            s.send("/ro/values", 1, "POST", "[{\"uid\":${OvenUid.POWER_STATE},\"value\":2}]")
+            Thread.sleep(1200)
+        }
+        if (!remoteStartAllowed()) {
+            throw java.io.IOException(
+                "a sütőn nincs engedélyezve a távoli indítás – nyomd meg a Beállításokban az engedélyező gombot"
+            )
+        }
+
+        val opts = mutableListOf<String>()
+        if (OvenPrograms.isGrill(programUid)) {
+            level?.let { opts.add("{\"uid\":${OvenUid.OPT_LEVEL},\"value\":$it}") }
+        } else {
+            temp?.let { opts.add("{\"uid\":${OvenUid.OPT_TEMPERATURE},\"value\":$it}") }
+        }
+        minutes?.takeIf { it > 0 }?.let {
+            opts.add("{\"uid\":${OvenUid.OPT_DURATION},\"value\":${it * 60}}")
+        }
+        if (fastPreheat) {
+            opts.add("{\"uid\":${OvenUid.OPT_FAST_PREHEAT},\"value\":true}")
+        }
+
+        val data = buildString {
+            append("[{\"program\":").append(programUid)
+            if (opts.isNotEmpty()) append(",\"options\":[").append(opts.joinToString(",")).append(']')
+            append("}]")
+        }
+        s.send("/ro/activeProgram", 1, "POST", data)
+        "Elindítva: ${OvenPrograms.nameOf(programUid)}"
+    }
 
     /** Egy tervfázis kiküldése: bekapcsolás, majd a program indítása a beállításaival. */
     fun sendPhase(store: Store, phase: Phase): Result<String> = run(store, "Küldés") { s ->

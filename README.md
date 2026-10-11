@@ -51,6 +51,11 @@ pedig programot indít (5120 = hőfok, 548 = időtartam, 5122 = grillfokozat).
 
 A felhős API-val szemben a helyi út az **Air Fry** módot is ismeri.
 
+A **Sütő** fül kézi vezérlőlap: fűtési mód, hőfok (vagy grillfokozat), idő, gyors felfűtés,
+indítás, szünet, leállítás, készenlét. A hőfok és az idő `liveUpdate`-es, ezért sütés közben
+is átállítható. Ugyanitt a sütőtér világítása kapcsolható és villogtatható — a villogtatás a
+program végén magától is lefut, ha kéred. Extrák: gyerekzár, konyhai időzítő.
+
 ## Állapot
 
 Első verzió: fázistervező. Később tervezett:
