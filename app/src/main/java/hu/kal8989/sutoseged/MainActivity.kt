@@ -40,6 +40,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -903,14 +904,16 @@ private fun HeroText(
     text: String,
     fontSize: TextUnit,
     fontWeight: FontWeight = FontWeight.Normal,
-    color: Color = Color.White
+    color: Color = Color.White,
+    maxLines: Int = 1
 ) {
     Text(
         text,
         fontSize = fontSize,
         fontWeight = fontWeight,
         color = color,
-        maxLines = 1,
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
         style = LocalTextStyle.current.copy(shadow = HeroShadow)
     )
 }
@@ -1349,22 +1352,19 @@ fun OvenScreen(store: Store) {
                                 else -> LocalOven.operationText().replaceFirstChar { it.uppercase() }
                             },
                             16.sp,
-                            FontWeight.Bold
+                            FontWeight.Bold,
+                            maxLines = 2
                         )
                         HeroText(
                             OvenPrograms.nameOf(modeUid),
                             13.sp,
-                            color = if (modeDirty) PendingColor else HeroMuted
+                            color = if (modeDirty) PendingColor else HeroMuted,
+                            maxLines = 2
                         )
                         if (remSec != null) {
                             Spacer(Modifier.height(6.dp))
                             HeroText("hátralévő idő", 11.sp, color = HeroMuted)
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                HeroText(LocalOven.formatClock(remSec), 28.sp, FontWeight.Bold)
-                                if (totalSec != null) {
-                                    HeroText(" / ${LocalOven.formatClock(totalSec)}", 13.sp, color = HeroMuted)
-                                }
-                            }
+                            HeroText(LocalOven.formatClock(remSec), 28.sp, FontWeight.Bold)
                             LocalOven.progress()?.let { p ->
                                 Box(
                                     Modifier
@@ -1385,9 +1385,11 @@ fun OvenScreen(store: Store) {
                             }
                             if (totalSec != null) {
                                 HeroText(
-                                    "eltelt ${LocalOven.formatClock((totalSec - remSec).coerceAtLeast(0))}",
+                                    "eltelt ${LocalOven.formatClock((totalSec - remSec).coerceAtLeast(0))}" +
+                                        " / ${LocalOven.formatClock(totalSec)}",
                                     11.sp,
-                                    color = HeroMuted
+                                    color = HeroMuted,
+                                    maxLines = 2
                                 )
                             }
                         }

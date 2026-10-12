@@ -6,6 +6,9 @@ import java.io.File
 
 class Store(context: Context) {
 
+    /** Az alkalmazás környezete (pl. a wifi-hálózat kereséséhez). */
+    val appContext: Context = context.applicationContext
+
     private val prefs = context.getSharedPreferences("sutoseged", Context.MODE_PRIVATE)
     private val plansFile = File(context.filesDir, "plans.json")
     val photoDir: File = File(context.filesDir, "photos").apply { mkdirs() }

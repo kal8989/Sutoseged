@@ -1,5 +1,9 @@
 package hu.kal8989.sutoseged
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -307,7 +311,9 @@ private class MiniWebSocket(raw: InputStream, private val out: OutputStream) {
 private class OvenSession(
     private val ip: String,
     pskB64: String,
-    private val deviceId: String
+    private val deviceId: String,
+    /** A wifi-hálózat: erre kötjük a socketet, hogy ne a mobilneten induljon el. */
+    private val wifi: Network?
 ) {
     private val psk = decodePsk(pskB64)
     @Volatile private var socket: Socket? = null
@@ -337,6 +343,10 @@ private class OvenSession(
 
     fun open() {
         val s = Socket()
+        // Ha a telefon a wifi mellett mobilnetet is használ (pl. mert a wifinek
+        // "nincs internetje"), az Android a mobilnetre tenné a kapcsolatot,
+        // ahonnan a sütő helyi címe elérhetetlen. Ezért a wifire kötjük.
+        wifi?.let { runCatching { it.bindSocket(s) } }
         s.connect(InetSocketAddress(ip, PORT), 8000)
         // Olvasási időkorlát nélkül: egy félbeszakadt TLS-rekord után a kapcsolat
         // amúgy sem folytatható. A néma kapcsolatot a LocalOven figyelője bontja.
@@ -527,6 +537,7 @@ object LocalOven {
     @Volatile private var active = false
     @Volatile private var failure: String? = null
     @Volatile private var retries = 0
+    @Volatile private var ip = ""
 
     // a sütés végének felismerése
     @Volatile private var lastOp: Int? = null
@@ -638,6 +649,7 @@ object LocalOven {
         if (active) return
         val ip = store.ovenIp.trim()
         val psk = store.ovenPsk.trim()
+        this.ip = ip
         if (ip.isEmpty() || psk.isEmpty()) {
             failure = "Hiányzik a sütő címe vagy kulcsa."
             ui { lastError = failure }
@@ -654,8 +666,16 @@ object LocalOven {
         ui { busy = true; status = "Kapcsolódás…"; lastError = null; values.clear() }
 
         val deviceId = store.ovenDeviceId
+        val wifi = findWifi(store.appContext)
+        if (wifi == null) {
+            active = false
+            failure = "A telefon most nincs wifin (mobilnetet használ). Kapcsold be a wifit, " +
+                "és csatlakozz ugyanarra a hálózatra, amelyiken a sütő van."
+            ui { busy = false; status = "Nincs kapcsolat"; lastError = failure }
+            return
+        }
         thread(name = "oven-link", isDaemon = true) {
-            val s = OvenSession(ip, psk, deviceId)
+            val s = OvenSession(ip, psk, deviceId, wifi)
             session = s
             var wasReady = false
             try {
@@ -819,9 +839,24 @@ object LocalOven {
         }
     }
 
+    /** A telefon wifi-hálózata, vagy null, ha most nincs wifin. */
+    private fun findWifi(context: Context): Network? = try {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        @Suppress("DEPRECATION")
+        cm.allNetworks.firstOrNull { n ->
+            cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        }
+    } catch (e: Exception) {
+        null
+    }
+
     private fun humanError(e: Exception): String {
         val t = e.message ?: e.javaClass.simpleName
         return when {
+            t.contains("failed to connect", true) ->
+                "A sütő nem válaszol ezen a címen ($ip). Lehet, hogy a router új IP-címet adott neki, " +
+                    "vagy ki van kapcsolva a sütő wifije."
+
             t.contains("ECONNREFUSED", true) || t.contains("refused", true) ->
                 "A sütő nem fogadja a kapcsolatot ezen a címen."
             t.contains("EHOSTUNREACH", true) || t.contains("unreachable", true) ->
