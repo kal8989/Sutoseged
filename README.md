@@ -86,6 +86,10 @@ a hőfokkal meleg narancs fényt kap; rajta a kör alakú kijelző és az állap
 A mentett tervekhez több fénykép is tartozhat (`SavedPlan.photos`); az új kép a régiek mellé
 kerül, és képenként törölhető. A régi, egyképes mentések automatikusan átkerülnek.
 
+Ha a sütő nem érhető el a megadott címen, az app megkeresi a helyi hálózaton
+(mDNS, `_homeconnect._tcp`, `OvenDiscovery.kt`), az új címet elmenti, és oda kapcsolódik.
+A Beállításokban a „Sütő keresése a hálózaton” gomb ugyanezt kézzel indítja.
+
 ## Állapot
 
 Első verzió: fázistervező. Később tervezett:

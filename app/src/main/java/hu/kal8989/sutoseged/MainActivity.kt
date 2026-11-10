@@ -1913,6 +1913,36 @@ fun SettingsScreen(store: Store) {
             singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
+        var searching by remember { mutableStateOf(false) }
+        var searchMsg by remember { mutableStateOf<String?>(null) }
+        OutlinedButton(
+            onClick = {
+                searching = true
+                searchMsg = "Keresés a hálózaton…"
+                scope.launch {
+                    val found = withContext(Dispatchers.IO) { OvenDiscovery.find(context) }
+                    val oven = OvenDiscovery.pickOven(found)
+                    searching = false
+                    searchMsg = when {
+                        oven != null -> {
+                            ovenIp = oven.ip
+                            store.ovenIp = oven.ip
+                            "Megtaláltam: ${oven.ip} (${oven.name})"
+                        }
+                        found.isEmpty() ->
+                            "Nem találtam Home Connect készüléket. Ugyanazon a wifin vagy, és be van kapcsolva a sütő?"
+                        else ->
+                            "Több készüléket találtam, válaszd ki a sütőt: " +
+                                found.joinToString(", ") { "${it.ip} (${it.name})" }
+                    }
+                }
+            },
+            enabled = !searching,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text(if (searching) "Keresés…" else "Sütő keresése a hálózaton") }
+        searchMsg?.let {
+            Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         OutlinedTextField(
             value = ovenPsk,
             onValueChange = {

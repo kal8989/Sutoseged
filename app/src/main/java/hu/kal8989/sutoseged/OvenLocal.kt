@@ -678,6 +678,7 @@ object LocalOven {
             val s = OvenSession(ip, psk, deviceId, wifi)
             session = s
             var wasReady = false
+            var relocatedTo: String? = null
             try {
                 s.open()
                 startWatchdog(s)
@@ -700,9 +701,29 @@ object LocalOven {
                 val why = s.closeReason
                 // Szándékos bontásnál ("") nincs mit jelenteni.
                 if (session === s && why != "") {
-                    val msg = if (why.isNullOrEmpty()) humanError(e) else why
-                    failure = msg
-                    ui { lastError = msg; status = "Nincs kapcsolat" }
+                    var msg = if (why.isNullOrEmpty()) humanError(e) else why
+                    // Nem érhető el a megadott címen: lehet, hogy a router új címet adott a
+                    // sütőnek. Megkeressük a hálózaton a saját hirdetése alapján.
+                    if (!wasReady && unreachable(e)) {
+                        ui { status = "A sütő keresése a hálózaton…" }
+                        val oven = OvenDiscovery.pickOven(OvenDiscovery.find(store.appContext))
+                        when {
+                            oven != null && oven.ip != ip -> {
+                                store.ovenIp = oven.ip
+                                relocatedTo = oven.ip
+                            }
+                            oven != null -> msg = "A sütő a hálózaton látszik ezen a címen ($ip), de most nem " +
+                                "fogad kapcsolatot. Próbáld újra fél perc múlva."
+                            else -> msg += " Kereséssel sem találtam meg a hálózaton."
+                        }
+                    }
+                    val moved = relocatedTo
+                    if (moved == null) {
+                        failure = msg
+                        ui { lastError = msg; status = "Nincs kapcsolat" }
+                    } else {
+                        ui { lastError = null; status = "A sütő új címen van ($moved), újrakapcsolódás…" }
+                    }
                 }
             } finally {
                 runCatching { s.close() }
@@ -712,8 +733,11 @@ object LocalOven {
                     active = false
                     remBaseSec = -1
                     ui { connected = false; busy = false; values.clear() }
-                    // Működő kapcsolat szakadt meg, és az app előtérben van: újrapróbálja.
-                    if (wasReady && foreground && retries < 3) {
+                    if (relocatedTo != null) {
+                        // A sütő új címét már elmentettük: kapcsolódás oda.
+                        main.postDelayed({ connect(store) }, 300)
+                    } else if (wasReady && foreground && retries < 3) {
+                        // Működő kapcsolat szakadt meg, és az app előtérben van: újrapróbálja.
                         retries++
                         main.postDelayed({ connect(store) }, 3000)
                     }
@@ -837,6 +861,14 @@ object LocalOven {
                 thread(name = "oven-blink", isDaemon = true) { blink(store, 5) }
             }
         }
+    }
+
+    /** A kapcsolat azért nem jött létre, mert a címen senki sem válaszolt. */
+    private fun unreachable(e: Exception): Boolean {
+        val t = e.message ?: ""
+        return e is java.net.SocketTimeoutException || e is java.net.ConnectException ||
+            e is java.net.NoRouteToHostException || t.contains("failed to connect", true) ||
+            t.contains("EHOSTUNREACH", true) || t.contains("ECONNREFUSED", true)
     }
 
     /** A telefon wifi-hálózata, vagy null, ha most nincs wifin. */
