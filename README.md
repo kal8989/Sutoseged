@@ -88,7 +88,10 @@ kerül, és képenként törölhető. A régi, egyképes mentések automatikusan
 
 Ha a sütő nem érhető el a megadott címen, az app megkeresi a helyi hálózaton
 (mDNS, `_homeconnect._tcp`, `OvenDiscovery.kt`), az új címet elmenti, és oda kapcsolódik.
-A Beállításokban a „Sütő keresése a hálózaton” gomb ugyanezt kézzel indítja.
+Ha a sütő nem hirdeti magát (pl. a router nem engedi át a multicastot), az app a wifi
+/24-es tartományának minden címét megnézi a 443-as porton, és a sütő kulcsával (TLS-PSK
+kézfogás) ellenőrzi, melyik a sütő. A Beállításokban a „Sütő keresése a hálózaton” gomb
+ugyanezt kézzel indítja.
 
 ## Állapot
 

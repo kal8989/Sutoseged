@@ -511,6 +511,33 @@ private class OvenSession(
     }
 }
 
+/**
+ * Kipróbálja, hogy az adott címen a sütő fogadja-e a kulcsunkat: csak a titkosított
+ * kézfogás, munkamenet nélkül. Így biztosan a sütőt találjuk meg, nem a routert.
+ */
+internal fun ovenAcceptsKey(ip: String, pskB64: String, wifi: Network?, timeoutMs: Int = 3000): Boolean {
+    val sock = Socket()
+    return try {
+        wifi?.let { runCatching { it.bindSocket(sock) } }
+        sock.connect(InetSocketAddress(ip, OvenSession.PORT), timeoutMs)
+        sock.soTimeout = timeoutMs
+        val p = TlsClientProtocol(sock.getInputStream(), sock.getOutputStream())
+        p.connect(
+            PSKTlsClient(
+                BcTlsCrypto(SecureRandom()),
+                OvenSession.IDENTITY.toByteArray(Charsets.UTF_8),
+                OvenSession.decodePsk(pskB64)
+            )
+        )
+        runCatching { p.close() }
+        true
+    } catch (e: Exception) {
+        false
+    } finally {
+        runCatching { sock.close() }
+    }
+}
+
 // ---------------------------------------------------------------- kapcsolat
 
 object LocalOven {
@@ -706,7 +733,8 @@ object LocalOven {
                     // sütőnek. Megkeressük a hálózaton a saját hirdetése alapján.
                     if (!wasReady && unreachable(e)) {
                         ui { status = "A sütő keresése a hálózaton…" }
-                        val oven = OvenDiscovery.pickOven(OvenDiscovery.find(store.appContext))
+                        val res = OvenDiscovery.locate(store.appContext, psk)
+                        val oven = res.oven
                         when {
                             oven != null && oven.ip != ip -> {
                                 store.ovenIp = oven.ip
@@ -714,7 +742,7 @@ object LocalOven {
                             }
                             oven != null -> msg = "A sütő a hálózaton látszik ezen a címen ($ip), de most nem " +
                                 "fogad kapcsolatot. Próbáld újra fél perc múlva."
-                            else -> msg += " Kereséssel sem találtam meg a hálózaton."
+                            else -> msg += " Kereséssel sem találtam meg: ${res.note}"
                         }
                     }
                     val moved = relocatedTo
@@ -872,7 +900,7 @@ object LocalOven {
     }
 
     /** A telefon wifi-hálózata, vagy null, ha most nincs wifin. */
-    private fun findWifi(context: Context): Network? = try {
+    internal fun findWifi(context: Context): Network? = try {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         @Suppress("DEPRECATION")
         cm.allNetworks.firstOrNull { n ->

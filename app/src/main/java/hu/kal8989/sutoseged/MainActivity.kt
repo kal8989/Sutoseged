@@ -1920,20 +1920,18 @@ fun SettingsScreen(store: Store) {
                 searching = true
                 searchMsg = "Keresés a hálózaton…"
                 scope.launch {
-                    val found = withContext(Dispatchers.IO) { OvenDiscovery.find(context) }
-                    val oven = OvenDiscovery.pickOven(found)
+                    val current = store.ovenIp.trim().takeIf { LocalOven.connected }
+                    val res = withContext(Dispatchers.IO) {
+                        OvenDiscovery.locate(context, store.ovenPsk, knownGood = current)
+                    }
+                    val oven = res.oven
                     searching = false
-                    searchMsg = when {
-                        oven != null -> {
-                            ovenIp = oven.ip
-                            store.ovenIp = oven.ip
-                            "Megtaláltam: ${oven.ip} (${oven.name})"
-                        }
-                        found.isEmpty() ->
-                            "Nem találtam Home Connect készüléket. Ugyanazon a wifin vagy, és be van kapcsolva a sütő?"
-                        else ->
-                            "Több készüléket találtam, válaszd ki a sütőt: " +
-                                found.joinToString(", ") { "${it.ip} (${it.name})" }
+                    searchMsg = if (oven != null) {
+                        ovenIp = oven.ip
+                        store.ovenIp = oven.ip
+                        "Megtaláltam: ${oven.ip} (${res.note})"
+                    } else {
+                        "Nem találtam meg a sütőt: ${res.note}"
                     }
                 }
             },

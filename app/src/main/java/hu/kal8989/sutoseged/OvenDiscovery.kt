@@ -1,9 +1,15 @@
 package hu.kal8989.sutoseged
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import java.net.Inet4Address
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -18,6 +24,77 @@ object OvenDiscovery {
     private const val SERVICE_TYPE = "_homeconnect._tcp"
 
     class Found(val name: String, val ip: String)
+
+    /** A keresés eredménye: a sütő (vagy null), és hogy hogyan találtuk meg, vagy miért nem. */
+    class Result(val oven: Found?, val note: String)
+
+    /**
+     * Megkeresi a sütőt: előbb a saját hirdetése alapján, és ha az nem jön, a wifi összes
+     * címét végignézi a 443-as porton, majd a sütő kulcsával ellenőrzi, melyik a sütő.
+     * [knownGood]: a cím, amelyen az app éppen kapcsolódva van (ezt nem kell ellenőrizni).
+     * Blokkol (néhány másodpercig), csak háttérszálról hívható.
+     */
+    fun locate(context: Context, psk: String, knownGood: String? = null): Result {
+        val wifi = LocalOven.findWifi(context)
+            ?: return Result(null, "a telefon most nincs wifin.")
+
+        val announced = find(context, 4000)
+        pickOven(announced)?.let { return Result(it, "a sütő hirdetése alapján") }
+
+        val open = scanPort(context, wifi, 443)
+        if (open.isEmpty()) {
+            return Result(null, "a wifin egyetlen eszköz sem fogad kapcsolatot a 443-as porton.")
+        }
+        if (knownGood != null && knownGood in open) {
+            return Result(Found("Home Connect", knownGood), "ezen a címen van most is kapcsolat")
+        }
+        for (ip in open) {
+            if (ovenAcceptsKey(ip, psk, wifi)) {
+                return Result(Found("Home Connect", ip), "hálózati kereséssel, a sütő kulcsa alapján")
+            }
+        }
+        return Result(
+            null,
+            "${open.size} eszköz fogad kapcsolatot a 443-as porton (${open.joinToString(", ")}), " +
+                "de egyik sem fogadta el a sütő kulcsát."
+        )
+    }
+
+    /** A wifi alhálózatának (legfeljebb 254 cím) azon címei, ahol a [port] nyitva van. */
+    private fun scanPort(context: Context, wifi: Network, port: Int): List<String> {
+        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return emptyList()
+        val link = cm.getLinkProperties(wifi)?.linkAddresses
+            ?.firstOrNull { it.address is Inet4Address } ?: return emptyList()
+        val own = link.address.address
+        val ownInt = ((own[0].toInt() and 255) shl 24) or ((own[1].toInt() and 255) shl 16) or
+            ((own[2].toInt() and 255) shl 8) or (own[3].toInt() and 255)
+        // Nagyobb hálózatnál is csak a telefon saját /24-es tartományát nézzük végig.
+        val bits = 32 - link.prefixLength.coerceIn(24, 30)
+        val net = ownInt and (-1 shl bits)
+        val hosts = (1 until (1 shl bits) - 1).map { net or it }.filter { it != ownInt }
+
+        val pool = Executors.newFixedThreadPool(48)
+        try {
+            val jobs = hosts.map { h ->
+                pool.submit(Callable<String?> {
+                    val ip = "${(h ushr 24) and 255}.${(h ushr 16) and 255}.${(h ushr 8) and 255}.${h and 255}"
+                    try {
+                        Socket().use { s ->
+                            wifi.bindSocket(s)
+                            s.connect(InetSocketAddress(ip, port), 500)
+                            ip
+                        }
+                    } catch (e: Exception) {
+                        null
+                    }
+                })
+            }
+            return jobs.mapNotNull { job -> runCatching { job.get(10, TimeUnit.SECONDS) }.getOrNull() }
+        } finally {
+            pool.shutdownNow()
+        }
+    }
 
     /**
      * Megkeresi a hálózaton hirdető készülékeket. Blokkol (legfeljebb [timeoutMs]),
