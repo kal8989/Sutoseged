@@ -112,4 +112,7 @@ Első verzió: fázistervező. Később tervezett:
 - Ritkán használt dolgok (gyors felfűtés, villogás, gyerekzár, konyhai időzítő) a
   „További beállítások” alatt, alapból becsukva.
 - A Tervező tetején kiemelt „Új terv” gomb: üres űrlap; ha az előző terv nincs elmentve, rákérdez.
+- (v23) A hőfok-, idő- és grillfokozat-kártyák alapból zárva vannak, így görgetés közben
+  nem változhat el semmi. A jobb alsó kerek ceruzával nyílnak ki (−, +, csúszka, beírás);
+  10 másodperc tétlenség után vagy a pipával bezáródnak.
 

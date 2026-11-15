@@ -1070,7 +1070,11 @@ private fun NumberDialog(
     )
 }
 
-/** Egy beállítókártya: −, a számra bökve beírható érték, +, csúszka. Sütés közben magától kiküldi. */
+/**
+ * Egy beállítókártya. Alapból zárva: görgetés közben semmi sem változhat el rajta.
+ * A jobb alsó ceruzával (vagy a számra bökve) nyílik ki: ekkor −, +, csúszka, és a
+ * számra bökve beírás. 10 másodperc tétlenség után, vagy a pipára bökve újra bezáródik.
+ */
 @Composable
 private fun ValueCard(
     title: String,
@@ -1087,7 +1091,19 @@ private fun ValueCard(
     onSlider: (Int) -> Unit,
     onTap: () -> Unit
 ) {
-    Card(Modifier.fillMaxWidth()) {
+    var editing by remember { mutableStateOf(false) }
+    // minden változtatás újraindítja a 10 másodperces visszazárást
+    LaunchedEffect(editing, value) {
+        if (editing) {
+            delay(10_000)
+            editing = false
+        }
+    }
+
+    Card(
+        Modifier.fillMaxWidth(),
+        border = if (editing) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null
+    ) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -1106,16 +1122,18 @@ private fun ValueCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                FilledTonalButton(
-                    onClick = onMinus,
-                    modifier = Modifier.size(56.dp),
-                    contentPadding = PaddingValues(0.dp)
-                ) { Text("−", fontSize = 26.sp) }
+                if (editing) {
+                    FilledTonalButton(
+                        onClick = onMinus,
+                        modifier = Modifier.size(56.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) { Text("−", fontSize = 26.sp) }
+                }
 
                 Box(
                     Modifier
                         .weight(1f)
-                        .clickable { onTap() },
+                        .clickable { if (editing) { onTap() } else { editing = true } },
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -1127,28 +1145,69 @@ private fun ValueCard(
                     )
                 }
 
-                FilledTonalButton(
-                    onClick = onPlus,
-                    modifier = Modifier.size(56.dp),
-                    contentPadding = PaddingValues(0.dp)
-                ) { Text("+", fontSize = 26.sp) }
+                if (editing) {
+                    FilledTonalButton(
+                        onClick = onPlus,
+                        modifier = Modifier.size(56.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) { Text("+", fontSize = 26.sp) }
+                }
             }
 
-            Slider(
-                value = value.toFloat().coerceIn(sliderRange.start, sliderRange.endInclusive),
-                onValueChange = { onSlider(it.roundToInt()) },
-                valueRange = sliderRange,
-                steps = sliderSteps
-            )
+            if (editing) {
+                Slider(
+                    value = value.toFloat().coerceIn(sliderRange.start, sliderRange.endInclusive),
+                    onValueChange = { onSlider(it.roundToInt()) },
+                    valueRange = sliderRange,
+                    steps = sliderSteps
+                )
+            }
 
-            Text(
-                message ?: hint,
-                fontSize = 12.sp,
-                color = if (message != null) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    message ?: if (editing) "Bökj a számra a beíráshoz · $hint" else hint,
+                    fontSize = 12.sp,
+                    color = if (message != null) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                EditToggle(editing) { editing = !editing }
+            }
         }
     }
+}
+
+/** A kártya jobb alsó sarkában a kerek ceruza (szerkesztés) vagy pipa (kész) gomb. */
+@Composable
+private fun EditToggle(editing: Boolean, onClick: () -> Unit) {
+    val bg = if (editing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+    val fg = if (editing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    Box(
+        Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(bg)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(Modifier.size(20.dp)) {
+            if (editing) drawCheckIcon(fg) else drawPencilIcon(fg)
+        }
+    }
+}
+
+private fun DrawScope.drawPencilIcon(c: Color) {
+    val w = size.width
+    val h = size.height
+    drawLine(c, Offset(w * 0.22f, h * 0.78f), Offset(w * 0.74f, h * 0.26f), strokeWidth = w * 0.18f, cap = StrokeCap.Round)
+    drawLine(c, Offset(w * 0.1f, h * 0.9f), Offset(w * 0.2f, h * 0.8f), strokeWidth = w * 0.1f, cap = StrokeCap.Round)
+}
+
+private fun DrawScope.drawCheckIcon(c: Color) {
+    val w = size.width
+    val h = size.height
+    drawLine(c, Offset(w * 0.15f, h * 0.55f), Offset(w * 0.42f, h * 0.8f), strokeWidth = w * 0.14f, cap = StrokeCap.Round)
+    drawLine(c, Offset(w * 0.42f, h * 0.8f), Offset(w * 0.88f, h * 0.24f), strokeWidth = w * 0.14f, cap = StrokeCap.Round)
 }
 
 // ---------------------------------------------------------------- gyorsgombok ikonjai
@@ -1721,7 +1780,17 @@ fun OvenScreen(store: Store, onOpenSettings: () -> Unit) {
         // ---------------- hőfok vagy grillfokozat
 
         if (isGrill) {
-            Card(Modifier.fillMaxWidth()) {
+            var levelEdit by remember { mutableStateOf(false) }
+            LaunchedEffect(levelEdit, levelN) {
+                if (levelEdit) {
+                    delay(10_000)
+                    levelEdit = false
+                }
+            }
+            Card(
+                Modifier.fillMaxWidth(),
+                border = if (levelEdit) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null
+            ) {
                 Column(
                     Modifier
                         .fillMaxWidth()
@@ -1733,6 +1802,7 @@ fun OvenScreen(store: Store, onOpenSettings: () -> Unit) {
                         listOf(1, 2, 3).forEach { n ->
                             FilterChip(
                                 selected = levelN == n,
+                                enabled = levelEdit,
                                 onClick = {
                                     levelN = n
                                     levelDirty = true
@@ -1742,12 +1812,16 @@ fun OvenScreen(store: Store, onOpenSettings: () -> Unit) {
                             )
                         }
                     }
-                    Text(
-                        tempMsg ?: adjustHint,
-                        fontSize = 12.sp,
-                        color = if (tempMsg != null) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            tempMsg ?: adjustHint,
+                            fontSize = 12.sp,
+                            color = if (tempMsg != null) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                        EditToggle(levelEdit) { levelEdit = !levelEdit }
+                    }
                 }
             }
         } else {
