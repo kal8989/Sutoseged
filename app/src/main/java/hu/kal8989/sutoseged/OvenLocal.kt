@@ -556,6 +556,25 @@ object LocalOven {
     /** Előtérben van-e az app – csak ilyenkor kapcsolódunk újra magunktól. */
     @Volatile var foreground = false
 
+    /**
+     * Háttérben a kapcsolatot csak sütés közben tartjuk meg (a sütés végi villogáshoz).
+     * Különben elengedjük, hogy egy másik telefon (pl. Marié) szabadon kapcsolódhasson.
+     */
+    private val bgDisconnect = Runnable {
+        if (!foreground && !(running() || paused())) disconnect()
+    }
+
+    fun onForeground() {
+        foreground = true
+        main.removeCallbacks(bgDisconnect)
+    }
+
+    fun onBackground() {
+        foreground = false
+        main.removeCallbacks(bgDisconnect)
+        main.postDelayed(bgDisconnect, 60_000)
+    }
+
     @Volatile private var session: OvenSession? = null
     private val main = Handler(Looper.getMainLooper())
 
@@ -834,6 +853,11 @@ object LocalOven {
         trackRemaining(map, op, prev)
         checkFinish(store, map, op)
         ui { values.putAll(map) }
+        // Háttérben véget ért (vagy leállított) sütés után fél perccel elengedjük a sütőt.
+        if (!foreground && op != null && op != 2 && op != 3 && op != 4 && op != 5) {
+            main.removeCallbacks(bgDisconnect)
+            main.postDelayed(bgDisconnect, 30_000)
+        }
     }
 
     private fun trackRemaining(map: Map<Int, Any>, op: Int?, prev: Int?) {

@@ -115,4 +115,9 @@ Első verzió: fázistervező. Később tervezett:
 - (v23) A hőfok-, idő- és grillfokozat-kártyák alapból zárva vannak, így görgetés közben
   nem változhat el semmi. A jobb alsó kerek ceruzával nyílnak ki (−, +, csúszka, beírás);
   10 másodperc tétlenség után vagy a pipával bezáródnak.
+- (v24) Beállítás fül → „Megosztás másik telefonnal”: a kulcsok és a sütő adatai (kérésre a
+  mentett tervek is, fényképek nélkül) egy `SUTOSEGED1:` kezdetű kódban küldhetők, a másik
+  telefonon a „Betöltés” gombbal olvashatók be.
+- (v24) Háttérben az app csak sütés közben tartja a kapcsolatot a sütővel; különben egy
+  perc múlva elengedi, hogy egy másik telefon kapcsolódhasson.
 

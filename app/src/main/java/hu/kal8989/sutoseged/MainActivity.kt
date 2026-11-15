@@ -148,10 +148,10 @@ fun App() {
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_START) {
-                LocalOven.foreground = true
+                LocalOven.onForeground()
                 if (store.ovenConfigured) LocalOven.connect(store)
             } else if (event == Lifecycle.Event.ON_STOP) {
-                LocalOven.foreground = false
+                LocalOven.onBackground()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -2262,6 +2262,74 @@ fun SettingsScreen(store: Store) {
         }
 
         ovenMsg?.let { Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
+
+        HorizontalDivider()
+
+        // ---------------- megosztás másik telefonnal
+
+        var sharePlans by remember { mutableStateOf(false) }
+        var importText by remember { mutableStateOf("") }
+        var shareMsg by remember { mutableStateOf<String?>(null) }
+
+        Text("Megosztás másik telefonnal", fontWeight = FontWeight.SemiBold)
+        Text(
+            "Egy kódba csomagolja az AI-kulcsokat és a sütő adatait. A másik telefonon " +
+                "ugyanitt, a „Betöltés” gombbal lehet beolvasni. A kódot csak annak küldd el, " +
+                "aki a te kulcsaidat használhatja.",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Mentett tervek is (fényképek nélkül)", Modifier.weight(1f), fontSize = 15.sp)
+            Switch(checked = sharePlans, onCheckedChange = { sharePlans = it })
+        }
+        Button(
+            onClick = {
+                val code = store.exportCode(sharePlans)
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "Sütősegéd beállítások")
+                    putExtra(Intent.EXTRA_TEXT, code)
+                }
+                runCatching {
+                    context.startActivity(Intent.createChooser(send, "Beállítások megosztása"))
+                }.onFailure { shareMsg = "Nem sikerült megnyitni a megosztást." }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Beállítások megosztása") }
+
+        OutlinedTextField(
+            value = importText,
+            onValueChange = { importText = it },
+            label = { Text("Kapott kód beillesztése") },
+            placeholder = { Text("${Store.EXPORT_PREFIX}…") },
+            maxLines = 3,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedButton(
+            onClick = {
+                shareMsg = try {
+                    val note = store.importCode(importText)
+                    // a lapon látható mezők is frissüljenek
+                    provider = store.provider
+                    geminiKey = store.geminiKey
+                    geminiModel = store.geminiModel
+                    claudeKey = store.claudeKey
+                    claudeModel = store.claudeModel
+                    ovenIp = store.ovenIp
+                    ovenPsk = store.ovenPsk
+                    importText = ""
+                    LocalOven.disconnect()
+                    LocalOven.connect(store)
+                    note
+                } catch (e: Exception) {
+                    e.message ?: "A kód hibás vagy hiányos."
+                }
+            },
+            enabled = importText.isNotBlank(),
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Betöltés") }
+        shareMsg?.let { Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
 
         HorizontalDivider()
 

@@ -1,7 +1,9 @@
 package hu.kal8989.sutoseged
 
 import android.content.Context
+import android.util.Base64
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 
 class Store(context: Context) {
@@ -161,9 +163,68 @@ class Store(context: Context) {
         savePlans(plans.filter { it.id != id })
     }
 
+    // ------------------------------------------------------------ megosztás másik telefonnal
+
+    /**
+     * A beállítások egyetlen szöveges kódban: AI-szolgáltató, kulcsok, modellek, a sütő
+     * címe és kulcsa; kérésre a mentett tervek is (fényképek nélkül).
+     */
+    fun exportCode(withPlans: Boolean): String {
+        val o = JSONObject()
+        o.put("v", 1)
+        o.put("provider", provider.name)
+        o.put("geminiKey", geminiKey)
+        o.put("geminiModel", geminiModel)
+        o.put("claudeKey", claudeKey)
+        o.put("claudeModel", claudeModel)
+        o.put("ovenIp", ovenIp)
+        o.put("ovenPsk", ovenPsk)
+        if (withPlans) {
+            o.put("plans", JSONArray(loadPlans().map { it.copy(photos = emptyList()).toJson() }))
+        }
+        val b64 = Base64.encodeToString(o.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        return EXPORT_PREFIX + b64
+    }
+
+    /** Betölti a másik telefonról kapott kódot; visszaadja, mi került be. Hibás kódnál kivételt dob. */
+    fun importCode(text: String): String {
+        val start = text.indexOf(EXPORT_PREFIX)
+        require(start >= 0) { "Ez nem Sütősegéd-kód. A kódnak így kell kezdődnie: $EXPORT_PREFIX" }
+        val b64 = text.substring(start + EXPORT_PREFIX.length)
+            .takeWhile { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' || it.isWhitespace() }
+            .filter { !it.isWhitespace() }
+        val o = JSONObject(String(Base64.decode(b64, Base64.NO_WRAP), Charsets.UTF_8))
+
+        o.optString("provider").takeIf { it.isNotBlank() }?.let { p ->
+            runCatching { provider = Provider.valueOf(p) }
+        }
+        o.optString("geminiKey").takeIf { it.isNotBlank() }?.let { geminiKey = it }
+        o.optString("geminiModel").takeIf { it.isNotBlank() }?.let { geminiModel = it }
+        o.optString("claudeKey").takeIf { it.isNotBlank() }?.let { claudeKey = it }
+        o.optString("claudeModel").takeIf { it.isNotBlank() }?.let { claudeModel = it }
+        o.optString("ovenIp").takeIf { it.isNotBlank() }?.let { ovenIp = it }
+        o.optString("ovenPsk").takeIf { it.isNotBlank() }?.let { ovenPsk = it }
+
+        var added = 0
+        o.optJSONArray("plans")?.let { arr ->
+            val existing = loadPlans()
+            val ids = existing.map { it.id }.toSet()
+            val incoming = (0 until arr.length()).mapNotNull { i ->
+                arr.optJSONObject(i)?.let { j -> runCatching { SavedPlan.from(j) }.getOrNull() }
+            }.filter { it.id !in ids }
+            if (incoming.isNotEmpty()) {
+                savePlans((incoming + existing).sortedByDescending { it.createdAt })
+            }
+            added = incoming.size
+        }
+        return "Betöltve: AI-beállítások és a sütő adatai" +
+            if (added > 0) ", valamint $added mentett terv." else "."
+    }
+
     fun newPhotoFile(): File = File(photoDir, "photo_${System.currentTimeMillis()}.jpg")
 
     companion object {
+        const val EXPORT_PREFIX = "SUTOSEGED1:"
         const val DEFAULT_GEMINI = "gemini-3.6-flash"
         const val DEFAULT_CLAUDE = "claude-sonnet-4-6"
 
