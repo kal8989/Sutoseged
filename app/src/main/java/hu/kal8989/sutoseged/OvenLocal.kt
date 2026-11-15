@@ -1030,6 +1030,13 @@ object LocalOven {
         if (on) "Gyerekzár be" else "Gyerekzár ki"
     )
 
+    /**
+     * Sípolás: a konyhai időzítőt két másodpercre állítja, a lejártakor a sütő jelez.
+     * A sütőnek nincs külön "csipogj" parancsa, ez a legrövidebb kerülőút.
+     */
+    fun beep(store: Store) =
+        setValue(store, OvenUid.ALARM_CLOCK, "2", "Sípolás – a sütő két másodperc múlva jelez")
+
     fun setAlarmMin(store: Store, min: Int) =
         setValue(store, OvenUid.ALARM_CLOCK, "${min * 60}", "Időzítő: $min perc")
 

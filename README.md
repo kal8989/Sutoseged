@@ -101,3 +101,15 @@ Első verzió: fázistervező. Később tervezett:
 - Home Connect API: a terv közvetlen kiküldése a sütőre
   (hivatalos API, de OAuth miatt kell hozzá kis szerveroldal, és a készüléken
   engedélyezni kell az "Állandó távoli indítás" beállítást)
+
+## Felület (v22)
+
+- Fülek sorrendje: Sütő (nyitólap), Tervező, Mentett, Beállítás.
+- A Sütő lap tetején, a sütőtér képén három kerek gomb: be/ki, lámpa, sípolás.
+  A sípolás a konyhai időzítőt 2 másodpercre állítja (a sütőnek nincs külön csipogás parancsa).
+- Sütés közben nagy Szünet és Leállítás gomb a kép alatt; a hőfok, az idő és a grillfokozat
+  átírása másfél másodperc után magától a sütőre kerül (nincs külön Beállít gomb).
+- Ritkán használt dolgok (gyors felfűtés, villogás, gyerekzár, konyhai időzítő) a
+  „További beállítások” alatt, alapból becsukva.
+- A Tervező tetején kiemelt „Új terv” gomb: üres űrlap; ha az előző terv nincs elmentve, rákérdez.
+
